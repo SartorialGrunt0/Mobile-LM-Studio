@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mobile LM Studio</title>
+  <link rel="stylesheet" href="app.css?v=20260513" />
+</head>
+<body>
+  <div class="page-shell">
+    <aside id="chat-drawer" class="chat-drawer">
+      <div class="drawer-head">
+        <div>
+          <p class="eyebrow">Saved Chats</p>
+          <h1>Mobile LM Studio</h1>
+        </div>
+        <button id="drawer-close" class="ghost-button mobile-only" type="button">Close</button>
+      </div>
+      <button id="new-chat-button" class="primary-button wide-button" type="button">New Chat</button>
+      <div id="chat-list" class="chat-list"></div>
+    </aside>
+
+    <button id="drawer-backdrop" class="drawer-backdrop" type="button" aria-label="Close chat list"></button>
+
+    <div class="workspace-shell">
+      <header class="top-bar">
+        <div class="top-bar-left">
+          <button id="drawer-toggle" class="ghost-button mobile-only" type="button">Chats</button>
+          <div>
+            <p class="eyebrow">Local Web Client</p>
+            <h2 class="top-title">LM Studio</h2>
+          </div>
+        </div>
+        <div class="top-bar-right">
+          <span id="connection-pill" class="connection-pill">Offline</span>
+          <button id="logout-button" class="ghost-button" type="button">Lock</button>
+        </div>
+      </header>
+
+      <section id="config-banner" class="config-banner" hidden></section>
+
+      <section class="controls-panel">
+        <div class="control-grid">
+          <label class="field">
+            <span>Model</span>
+            <select id="model-select"></select>
+          </label>
+
+          <div class="button-stack">
+            <button id="load-model-button" class="secondary-button" type="button">Load</button>
+            <button id="unload-model-button" class="ghost-button" type="button">Unload</button>
+          </div>
+
+          <label class="field">
+            <span>Context</span>
+            <input id="context-length-input" type="number" min="512" step="512" />
+          </label>
+
+          <label class="field">
+            <span>Reasoning</span>
+            <select id="reasoning-select"></select>
+          </label>
+        </div>
+
+        <div id="model-meta" class="model-meta"></div>
+
+        <details class="advanced-panel">
+          <summary>Prompt and Tools</summary>
+          <label class="field wide-field">
+            <span>System Prompt</span>
+            <textarea id="system-prompt-input" rows="3" placeholder="Optional system prompt"></textarea>
+          </label>
+
+          <div class="mcp-section">
+            <p class="subhead">MCP Servers</p>
+            <div id="mcp-list" class="chip-list"></div>
+          </div>
+        </details>
+      </section>
+
+      <section id="status-bar" class="status-bar">Ready</section>
+
+      <main id="message-scroll" class="message-scroll">
+        <div id="empty-state" class="empty-state">
+          <h3>Start a local chat</h3>
+          <p>Select a model, enable any MCP servers you want available, and send a message.</p>
+        </div>
+        <div id="message-list" class="message-list"></div>
+      </main>
+
+      <form id="composer-form" class="composer">
+        <label class="composer-field">
+          <span>Message</span>
+          <textarea id="message-input" rows="1" placeholder="Send a message"></textarea>
+        </label>
+        <button id="send-button" class="primary-button send-button" type="submit">Send</button>
+      </form>
+    </div>
+  </div>
+
+  <section id="login-screen" class="login-screen" hidden>
+    <form id="login-form" class="login-card">
+      <p class="eyebrow">Protected Access</p>
+      <h2>Enter PIN</h2>
+      <label class="field">
+        <span>PIN</span>
+        <input id="login-pin-input" type="password" inputmode="numeric" autocomplete="current-password" />
+      </label>
+      <button class="primary-button wide-button" type="submit">Unlock</button>
+      <p id="login-error" class="error-text" hidden>PIN was not accepted.</p>
+    </form>
+  </section>
+
+  <script src="app.js?v=20260513" type="module"></script>
+</body>
+</html>
