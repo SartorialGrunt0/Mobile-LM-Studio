@@ -48,7 +48,7 @@ If you just want to see the UI without installing the Windows service, run:
 ./scripts/dev-server.ps1
 ```
 
-That starts the app directly from source on `http://127.0.0.1:5080` and stores chat data in `artifacts/dev/mobile-lm-studio.db` inside the repo.
+That starts the app directly from source on `http://127.0.0.1:5081` and stores chat data in `artifacts/dev/mobile-lm-studio.db` inside the repo. The non-service default avoids colliding with the installed Windows service on port `5080`.
 
 You can override the main dev settings:
 
@@ -65,6 +65,7 @@ When you run the setup executable, the install wizard lets you choose:
 - The SQLite data file location
 - The LM Studio server address
 - The LM Studio server API key
+- The optional path to LM Studio `mcp.json`
 - Whether sign-in is required, plus the PIN when enabled
 
 After installation finishes, the final page shows a link to `http://localhost:{port}` using the port selected in the wizard.
@@ -97,6 +98,10 @@ The generated `appsettings.json` contains:
 - `LmStudio:McpConfigPath`: path to LM Studio `mcp.json`
 - `Security:PinHash` and `Security:PinSalt`: PBKDF2-protected PIN values
 - `Web:Urls`: URL binding for the service
+
+Runtime changes made in the UI are also persisted to `%PROGRAMDATA%\MobileLmStudio\appsettings.runtime.json` so the service keeps the latest LM Studio base URL, API token, and MCP config path across restarts.
+
+Service diagnostics are written to `%PROGRAMDATA%\MobileLmStudio\logs\YYYYMMDD.log`.
 
 ## Uninstall
 

@@ -46,7 +46,7 @@ Write-Host "LM Studio: $LmStudioUrl"
     --configuration $Configuration `
     --no-launch-profile `
     -- `
-    "--Web:Urls:0=$listenUrl" `
+    "--urls=$listenUrl" `
     "--Storage:ConnectionString=$connectionString" `
     "--LmStudio:BaseUrl=$LmStudioUrl" `
     "--LmStudio:ApiToken=$LmStudioApiToken" `

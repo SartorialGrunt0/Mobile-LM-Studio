@@ -4,21 +4,40 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Options;
 using MobileLmStudio.Models;
 using MobileLmStudio.Services;
 
 var builder = WebApplication.CreateBuilder(args);
+var runtimeSettingsPath = ApplicationPaths.ResolveRuntimeSettingsPath();
+var runtimeSettingsDirectory = Path.GetDirectoryName(runtimeSettingsPath)
+    ?? throw new InvalidOperationException("A runtime settings directory is required.");
+Directory.CreateDirectory(runtimeSettingsDirectory);
+
+builder.Configuration.AddJsonFile(
+    new PhysicalFileProvider(runtimeSettingsDirectory),
+    Path.GetFileName(runtimeSettingsPath),
+    optional: true,
+    reloadOnChange: false);
 
 builder.Host.UseWindowsService();
+builder.Logging.AddProvider(new FileLoggerProvider(ApplicationPaths.ResolveLogDirectory()));
 builder.Services.Configure<AppOptions>(builder.Configuration);
 
 var configuredOptions = builder.Configuration.Get<AppOptions>() ?? new AppOptions();
-if (configuredOptions.Web.Urls.Length > 0)
+var hostOverrideUrls = ResolveHostOverrideUrls(builder.Configuration);
+var configuredWebUrls = hostOverrideUrls.Length > 0
+    ? hostOverrideUrls
+    : ResolveConfiguredWebUrls(builder.Configuration);
+if (hostOverrideUrls.Length == 0 && configuredWebUrls.Length > 0)
 {
-    builder.WebHost.UseUrls(configuredOptions.Web.Urls);
+    builder.WebHost.UseUrls(configuredWebUrls);
 }
+
+var defaultListenUrl = configuredWebUrls.FirstOrDefault() ?? "http://0.0.0.0:5080";
 
 builder.Services
     .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
@@ -44,27 +63,80 @@ builder.Services.AddAuthorization();
 builder.Services.AddSingleton<PinSecurityService>();
 builder.Services.AddSingleton<McpCatalogService>();
 builder.Services.AddSingleton<ChatRepository>();
+builder.Services.AddSingleton(new LmStudioSettingsStore(runtimeSettingsPath));
+builder.Services.AddSingleton<LmStudioConnectionService>(sp =>
+{
+    var options = sp.GetRequiredService<IOptions<AppOptions>>().Value;
+    return new LmStudioConnectionService(options.LmStudio);
+});
 builder.Services.AddHttpClient<LmStudioClient>();
 
 var app = builder.Build();
 
-await app.Services.GetRequiredService<ChatRepository>().InitializeAsync(app.Lifetime.ApplicationStopping);
+app.Logger.LogInformation(
+    "Mobile LM Studio starting. ContentRoot={ContentRoot}; WebRoot={WebRoot}; DefaultUrl={DefaultUrl}; LmStudioBaseUrl={LmStudioBaseUrl}; McpConfigPath={McpConfigPath}; RuntimeSettingsPath={RuntimeSettingsPath}; LogDirectory={LogDirectory}",
+    app.Environment.ContentRootPath,
+    app.Environment.WebRootPath ?? "(none)",
+    defaultListenUrl,
+    configuredOptions.LmStudio.BaseUrl,
+    configuredOptions.LmStudio.McpConfigPath,
+    runtimeSettingsPath,
+    ApplicationPaths.ResolveLogDirectory());
+
+if (string.IsNullOrWhiteSpace(app.Environment.WebRootPath) || !Directory.Exists(app.Environment.WebRootPath))
+{
+    app.Logger.LogWarning("Web root path {WebRootPath} was not found. Static files may be unavailable.", app.Environment.WebRootPath ?? "(none)");
+}
+
+app.Lifetime.ApplicationStarted.Register(() =>
+    app.Logger.LogInformation("Mobile LM Studio started. Listening on {Urls}.", string.Join(", ", app.Urls)));
+app.Lifetime.ApplicationStopping.Register(() =>
+    app.Logger.LogInformation("Mobile LM Studio is stopping."));
+
+try
+{
+    await app.Services.GetRequiredService<ChatRepository>().InitializeAsync(app.Lifetime.ApplicationStopping);
+}
+catch (Exception exception)
+{
+    app.Logger.LogCritical(exception, "Failed to initialize chat storage.");
+    throw;
+}
+
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async context =>
+    {
+        var exception = context.Features.Get<IExceptionHandlerPathFeature>()?.Error;
+        if (exception is not null)
+        {
+            app.Logger.LogError(exception, "Unhandled exception for {Method} {Path}.", context.Request.Method, context.Request.Path);
+        }
+
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        await Results.Problem("An unexpected server error occurred. Check the service log for details.", statusCode: StatusCodes.Status500InternalServerError)
+            .ExecuteAsync(context);
+    });
+});
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapGet("/api/bootstrap", (HttpContext context, IOptions<AppOptions> options, PinSecurityService pinSecurity) =>
+app.MapGet("/api/bootstrap", (HttpContext context, IOptions<AppOptions> options, PinSecurityService pinSecurity, LmStudioConnectionService connectionService) =>
 {
     var current = options.Value;
+    var baseUrl = connectionService.BaseUrl;
+    var apiToken = connectionService.ApiToken;
+    var mcpConfigPath = connectionService.McpConfigPath;
     return Results.Ok(new BootstrapResponse(
         pinSecurity.IsConfigured,
         !pinSecurity.IsConfigured || context.User.Identity?.IsAuthenticated == true,
-        !string.IsNullOrWhiteSpace(current.LmStudio.BaseUrl),
-        !string.IsNullOrWhiteSpace(current.LmStudio.McpConfigPath),
-        !string.IsNullOrWhiteSpace(current.LmStudio.ApiToken),
-        current.Web.Urls.FirstOrDefault() ?? "http://0.0.0.0:5080"));
+        !string.IsNullOrWhiteSpace(baseUrl),
+        !string.IsNullOrWhiteSpace(mcpConfigPath),
+        !string.IsNullOrWhiteSpace(apiToken),
+        defaultListenUrl));
 });
 
 app.MapPost("/api/auth/login", async Task<IResult> (LoginRequest request, HttpContext context, PinSecurityService pinSecurity) =>
@@ -95,9 +167,54 @@ app.MapPost("/api/auth/logout", async (HttpContext context, PinSecurityService p
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
 
 var api = app.MapGroup("/api");
-api.RequireAuthorization();
+api.AddEndpointFilter(async (invocationContext, next) =>
+{
+    var httpContext = invocationContext.HttpContext;
+    var pinSecurity = httpContext.RequestServices.GetRequiredService<PinSecurityService>();
+    if (!pinSecurity.IsConfigured || httpContext.User.Identity?.IsAuthenticated == true)
+    {
+        return await next(invocationContext);
+    }
 
-api.MapGet("/models", async Task<IResult> (LmStudioClient client, CancellationToken cancellationToken) =>
+    return Results.Unauthorized();
+});
+
+api.MapGet("/settings", (LmStudioConnectionService connectionService) =>
+{
+    return Results.Ok(connectionService.GetSettings());
+});
+
+api.MapPost("/settings", (SettingsUpdateRequest request, LmStudioConnectionService connectionService, LmStudioSettingsStore settingsStore, ILogger<Program> logger) =>
+{
+    var normalizedSettings = NormalizeSettings(request);
+    var validationErrors = ValidateSettings(normalizedSettings);
+    if (validationErrors is not null)
+    {
+        return Results.ValidationProblem(validationErrors);
+    }
+
+    try
+    {
+        settingsStore.Save(normalizedSettings);
+        connectionService.UpdateSettings(normalizedSettings.BaseUrl, normalizedSettings.ApiToken, normalizedSettings.McpConfigPath);
+
+        logger.LogInformation(
+            "LM Studio settings updated. BaseUrl={BaseUrl}; McpConfigPath={McpConfigPath}; ApiTokenConfigured={HasApiToken}; RuntimeSettingsPath={RuntimeSettingsPath}",
+            normalizedSettings.BaseUrl,
+            normalizedSettings.McpConfigPath,
+            !string.IsNullOrWhiteSpace(normalizedSettings.ApiToken),
+            settingsStore.SettingsPath);
+
+        return Results.Ok(connectionService.GetSettings());
+    }
+    catch (Exception exception)
+    {
+        logger.LogError(exception, "Failed to persist LM Studio settings to {RuntimeSettingsPath}.", settingsStore.SettingsPath);
+        return Results.Problem("Unable to save settings. Check the service log for details.", statusCode: StatusCodes.Status500InternalServerError);
+    }
+});
+
+api.MapGet("/models", async Task<IResult> (LmStudioClient client, LmStudioConnectionService connectionService, ILogger<Program> logger, CancellationToken cancellationToken) =>
 {
     try
     {
@@ -105,11 +222,12 @@ api.MapGet("/models", async Task<IResult> (LmStudioClient client, CancellationTo
     }
     catch (Exception exception)
     {
+        logger.LogError(exception, "Failed to load the LM Studio model catalog from {BaseUrl}.", connectionService.BaseUrl);
         return Results.Problem(exception.Message, statusCode: StatusCodes.Status502BadGateway);
     }
 });
 
-api.MapPost("/models/load", async Task<IResult> (ModelLoadRequest request, LmStudioClient client, CancellationToken cancellationToken) =>
+api.MapPost("/models/load", async Task<IResult> (ModelLoadRequest request, LmStudioClient client, LmStudioConnectionService connectionService, ILogger<Program> logger, CancellationToken cancellationToken) =>
 {
     try
     {
@@ -117,11 +235,12 @@ api.MapPost("/models/load", async Task<IResult> (ModelLoadRequest request, LmStu
     }
     catch (Exception exception)
     {
+        logger.LogError(exception, "Failed to load model {Model} through LM Studio at {BaseUrl}.", request.Model, connectionService.BaseUrl);
         return Results.Problem(exception.Message, statusCode: StatusCodes.Status502BadGateway);
     }
 });
 
-api.MapPost("/models/unload", async Task<IResult> (ModelUnloadRequest request, LmStudioClient client, CancellationToken cancellationToken) =>
+api.MapPost("/models/unload", async Task<IResult> (ModelUnloadRequest request, LmStudioClient client, LmStudioConnectionService connectionService, ILogger<Program> logger, CancellationToken cancellationToken) =>
 {
     try
     {
@@ -129,12 +248,23 @@ api.MapPost("/models/unload", async Task<IResult> (ModelUnloadRequest request, L
     }
     catch (Exception exception)
     {
+        logger.LogError(exception, "Failed to unload model instance {InstanceId} through LM Studio at {BaseUrl}.", request.InstanceId, connectionService.BaseUrl);
         return Results.Problem(exception.Message, statusCode: StatusCodes.Status502BadGateway);
     }
 });
 
-api.MapGet("/mcp/servers", async (McpCatalogService catalog, CancellationToken cancellationToken) =>
-    Results.Ok(await catalog.GetServersAsync(cancellationToken)));
+api.MapGet("/mcp/servers", async Task<IResult> (McpCatalogService catalog, LmStudioConnectionService connectionService, ILogger<Program> logger, CancellationToken cancellationToken) =>
+{
+    try
+    {
+        return Results.Ok(await catalog.GetServersAsync(cancellationToken));
+    }
+    catch (Exception exception)
+    {
+        logger.LogError(exception, "Failed to load MCP servers from {McpConfigPath}.", connectionService.McpConfigPath);
+        return Results.Problem(exception.Message, statusCode: StatusCodes.Status500InternalServerError);
+    }
+});
 
 api.MapGet("/chats", async (ChatRepository repository, CancellationToken cancellationToken) =>
     Results.Ok(await repository.ListChatsAsync(cancellationToken)));
@@ -214,7 +344,63 @@ api.MapPost("/chats/stream", async Task (HttpContext context, ChatStreamRequest 
 
 app.MapFallbackToFile("index.html");
 
-app.Run();
+try
+{
+    await app.RunAsync();
+}
+catch (Exception exception)
+{
+    app.Logger.LogCritical(exception, "Mobile LM Studio terminated unexpectedly.");
+    throw;
+}
+
+static SettingsResponse NormalizeSettings(SettingsUpdateRequest request)
+{
+    return new SettingsResponse(
+        request.BaseUrl.Trim(),
+        request.ApiToken.Trim(),
+        request.McpConfigPath.Trim());
+}
+
+static Dictionary<string, string[]>? ValidateSettings(SettingsResponse settings)
+{
+    Dictionary<string, string[]>? errors = null;
+
+    if (!string.IsNullOrWhiteSpace(settings.BaseUrl)
+        && (!Uri.TryCreate(settings.BaseUrl, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)))
+    {
+        errors = [];
+        errors["baseUrl"] = ["Base URL must be an absolute http:// or https:// URL."];
+    }
+
+    return errors;
+}
+
+static string[] ResolveConfiguredWebUrls(IConfiguration configuration)
+{
+    return configuration
+        .GetSection("Web:Urls")
+        .GetChildren()
+        .Select(section => section.Value)
+        .Where(value => !string.IsNullOrWhiteSpace(value))
+        .Cast<string>()
+        .ToArray();
+}
+
+static string[] ResolveHostOverrideUrls(IConfiguration configuration)
+{
+    var urls = configuration["urls"];
+    if (string.IsNullOrWhiteSpace(urls))
+    {
+        return [];
+    }
+
+    return urls
+        .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Where(value => !string.IsNullOrWhiteSpace(value))
+        .ToArray();
+}
 
 internal static class ChatStreamHelpers
 {
@@ -247,12 +433,12 @@ internal static class ChatStreamHelpers
                         var chatEndEvent = JsonSerializer.Deserialize<LmStudioChatEndEvent>(payload, JsonOptions);
                         if (chatEndEvent?.Result is not null)
                         {
-                            finalResponse = chatEndEvent.Result;
-                            downstreamPayload = JsonSerializer.Serialize(chatEndEvent.Result, JsonOptions);
+                            finalResponse = CloneChatResponse(chatEndEvent.Result);
                         }
                         else
                         {
-                            finalResponse = JsonSerializer.Deserialize<LmStudioChatResponse>(payload, JsonOptions);
+                            var chatResponse = JsonSerializer.Deserialize<LmStudioChatResponse>(payload, JsonOptions);
+                            finalResponse = chatResponse is null ? null : CloneChatResponse(chatResponse);
                         }
                     }
 
@@ -277,6 +463,35 @@ internal static class ChatStreamHelpers
         }
 
         return finalResponse;
+    }
+
+    private static LmStudioChatResponse CloneChatResponse(LmStudioChatResponse response)
+    {
+        return new LmStudioChatResponse
+        {
+            ModelInstanceId = response.ModelInstanceId,
+            ResponseId = response.ResponseId,
+            Stats = response.Stats is null
+                ? null
+                : new LmStudioChatStats(
+                    response.Stats.InputTokens,
+                    response.Stats.TotalOutputTokens,
+                    response.Stats.ReasoningOutputTokens,
+                    response.Stats.TokensPerSecond,
+                    response.Stats.TimeToFirstTokenSeconds,
+                    response.Stats.ModelLoadTimeSeconds),
+            Output = response.Output.Select(item => new LmStudioOutputItem
+            {
+                Type = item.Type,
+                Content = item.Content,
+                Tool = item.Tool,
+                Arguments = item.Arguments.ValueKind is JsonValueKind.Undefined ? default : item.Arguments.Clone(),
+                Output = item.Output,
+                ProviderInfo = item.ProviderInfo is null ? null : new LmStudioProviderInfo(item.ProviderInfo.Type, item.ProviderInfo.PluginId, item.ProviderInfo.ServerLabel),
+                Reason = item.Reason,
+                Metadata = item.Metadata.ValueKind is JsonValueKind.Undefined ? default : item.Metadata.Clone(),
+            }).ToArray(),
+        };
     }
 
     internal static AssistantPersistenceResult BuildAssistantPersistence(LmStudioChatResponse response)

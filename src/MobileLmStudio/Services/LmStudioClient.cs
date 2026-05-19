@@ -13,11 +13,13 @@ internal sealed class LmStudioClient
 
     private readonly HttpClient _httpClient;
     private readonly IOptionsMonitor<AppOptions> _options;
+    private readonly LmStudioConnectionService _connectionService;
 
-    public LmStudioClient(HttpClient httpClient, IOptionsMonitor<AppOptions> options)
+    public LmStudioClient(HttpClient httpClient, IOptionsMonitor<AppOptions> options, LmStudioConnectionService connectionService)
     {
         _httpClient = httpClient;
         _options = options;
+        _connectionService = connectionService;
         _httpClient.Timeout = Timeout.InfiniteTimeSpan;
     }
 
@@ -129,16 +131,17 @@ internal sealed class LmStudioClient
 
     private HttpRequestMessage CreateRequest(HttpMethod method, string path, object? content = null, bool acceptEventStream = false)
     {
-        var options = _options.CurrentValue;
-        var baseUri = new Uri(EnsureTrailingSlash(options.LmStudio.BaseUrl), UriKind.Absolute);
+        var baseUrl = _connectionService.BaseUrl;
+        var apiToken = _connectionService.ApiToken;
+        var baseUri = new Uri(EnsureTrailingSlash(baseUrl), UriKind.Absolute);
         var request = new HttpRequestMessage(method, new Uri(baseUri, path));
 
         request.Headers.Accept.Clear();
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(acceptEventStream ? "text/event-stream" : "application/json"));
 
-        if (!string.IsNullOrWhiteSpace(options.LmStudio.ApiToken))
+        if (!string.IsNullOrWhiteSpace(apiToken))
         {
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", options.LmStudio.ApiToken);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiToken.Trim());
         }
 
         if (content is not null)

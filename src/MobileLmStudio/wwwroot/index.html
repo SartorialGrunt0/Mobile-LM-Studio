@@ -33,6 +33,7 @@
         </div>
         <div class="top-bar-right">
           <span id="connection-pill" class="connection-pill">Offline</span>
+          <button id="settings-button" class="ghost-button" type="button" title="Settings">&#9881;</button>
           <button id="logout-button" class="ghost-button" type="button">Lock</button>
         </div>
       </header>
@@ -108,6 +109,30 @@
       </label>
       <button class="primary-button wide-button" type="submit">Unlock</button>
       <p id="login-error" class="error-text" hidden>PIN was not accepted.</p>
+    </form>
+  </section>
+
+  <section id="settings-screen" class="settings-screen" hidden>
+    <form id="settings-form" class="settings-card">
+      <p class="eyebrow">Connection Settings</p>
+      <h2>LM Studio Connection</h2>
+      <label class="field">
+        <span>Base URL</span>
+        <input id="settings-base-url" type="url" placeholder="http://127.0.0.1:1234" />
+      </label>
+      <label class="field">
+        <span>API Token</span>
+        <input id="settings-api-token" type="password" placeholder="Optional API token" />
+      </label>
+      <label class="field">
+        <span>MCP Config Path</span>
+        <input id="settings-mcp-path" type="text" placeholder="Optional path to mcp.json" />
+      </label>
+      <div class="settings-actions">
+        <button id="settings-save-button" class="primary-button" type="submit">Save</button>
+        <button id="settings-cancel-button" class="secondary-button" type="button">Cancel</button>
+      </div>
+      <p id="settings-status" class="settings-status" hidden></p>
     </form>
   </section>
 

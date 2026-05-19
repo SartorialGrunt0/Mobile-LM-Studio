@@ -342,6 +342,32 @@ function Write-AppSettings {
     Set-Content -Path (Join-Path $TargetPath "appsettings.json") -Value $json -Encoding UTF8
 }
 
+function Get-RuntimeSettingsPath {
+    $appDataPath = Join-Path $env:ProgramData "MobileLmStudio"
+    New-Item -ItemType Directory -Path $appDataPath -Force | Out-Null
+    return (Join-Path $appDataPath "appsettings.runtime.json")
+}
+
+function Write-RuntimeSettings {
+    param(
+        [string]$SettingsPath,
+        [string]$Url,
+        [string]$ApiToken,
+        [string]$McpPath
+    )
+
+    $settings = [ordered]@{
+        LmStudio = [ordered]@{
+            BaseUrl = $Url
+            ApiToken = $ApiToken
+            McpConfigPath = $McpPath
+        }
+    }
+
+    $json = $settings | ConvertTo-Json -Depth 3
+    Set-Content -Path $SettingsPath -Value $json -Encoding UTF8
+}
+
 $resolvedInstallPath = [System.IO.Path]::GetFullPath($InstallPath)
 $sourcePath = Resolve-SourcePath
 
@@ -409,6 +435,7 @@ $pinPayload = if ([string]::IsNullOrWhiteSpace($Pin)) {
 }
 
 Write-AppSettings -TargetPath $resolvedInstallPath -Url $LmStudioUrl -ApiToken $LmStudioApiToken -McpPath $McpConfigPath -PinPayload $pinPayload -Iterations $PinIterations -ListenAddress $ListenUrl -ConnectionString $connectionString
+Write-RuntimeSettings -SettingsPath (Get-RuntimeSettingsPath) -Url $LmStudioUrl -ApiToken $LmStudioApiToken -McpPath $McpConfigPath
 
 $serviceCommand = Resolve-ServiceCommand -BasePath $resolvedInstallPath
 $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue

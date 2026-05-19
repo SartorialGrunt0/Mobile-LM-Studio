@@ -41,6 +41,8 @@ var
   LmStudioUrlEdit: TNewEdit;
   ApiKeyLabel: TNewStaticText;
   ApiKeyEdit: TNewEdit;
+  McpConfigPathLabel: TNewStaticText;
+  McpConfigPathEdit: TNewEdit;
   EnablePinCheckBox: TNewCheckBox;
   PinLabel: TNewStaticText;
   PinEdit: TNewEdit;
@@ -99,7 +101,7 @@ begin
     '  "ListenUrl": "' + EscapeJson(GetListenUrl()) + '",' + #13#10 +
     '  "LmStudioUrl": "' + EscapeJson(Trim(LmStudioUrlEdit.Text)) + '",' + #13#10 +
     '  "LmStudioApiToken": "' + EscapeJson(ApiKeyEdit.Text) + '",' + #13#10 +
-    '  "McpConfigPath": "",' + #13#10 +
+    '  "McpConfigPath": "' + EscapeJson(Trim(McpConfigPathEdit.Text)) + '",' + #13#10 +
     '  "DataPath": "' + EscapeJson(Trim(DataPathEdit.Text)) + '",' + #13#10 +
     '  "Pin": "' + EscapeJson(GetSelectedPin()) + '",' + #13#10 +
     '  "PinIterations": 100000' + #13#10 +
@@ -151,9 +153,9 @@ begin
     end;
 
     if ErrorDetails <> '' then
-      RaiseException('Mobile LM Studio files were copied, but the Windows service registration failed:' + #13#10#13#10 + ErrorDetails)
+      RaiseException('Mobile LM Studio files were copied, but the Windows service registration failed:' + #13#10#13#10 + ErrorDetails + #13#10#13#10 + 'Check %PROGRAMDATA%\MobileLmStudio\logs for service diagnostics.')
     else
-      RaiseException('Mobile LM Studio files were copied, but the Windows service registration failed. Run scripts\\install-service.ps1 manually to finish setup.');
+      RaiseException('Mobile LM Studio files were copied, but the Windows service registration failed. Check %PROGRAMDATA%\MobileLmStudio\logs and run scripts\\install-service.ps1 manually to finish setup.');
   end;
 
   InstallSucceeded := True;
@@ -225,7 +227,21 @@ begin
   ApiKeyEdit.Width := ConfigurationPage.SurfaceWidth;
   ApiKeyEdit.PasswordChar := '*';
 
-  TopPosition := ApiKeyEdit.Top + ApiKeyEdit.Height + ScaleY(14);
+  TopPosition := ApiKeyEdit.Top + ApiKeyEdit.Height + ScaleY(12);
+
+  McpConfigPathLabel := TNewStaticText.Create(ConfigurationPage);
+  McpConfigPathLabel.Parent := ConfigurationPage.Surface;
+  McpConfigPathLabel.Left := 0;
+  McpConfigPathLabel.Top := TopPosition;
+  McpConfigPathLabel.Caption := 'Optional MCP config path';
+
+  McpConfigPathEdit := TNewEdit.Create(ConfigurationPage);
+  McpConfigPathEdit.Parent := ConfigurationPage.Surface;
+  McpConfigPathEdit.Left := 0;
+  McpConfigPathEdit.Top := McpConfigPathLabel.Top + McpConfigPathLabel.Height + ScaleY(4);
+  McpConfigPathEdit.Width := ConfigurationPage.SurfaceWidth;
+
+  TopPosition := McpConfigPathEdit.Top + McpConfigPathEdit.Height + ScaleY(14);
 
   EnablePinCheckBox := TNewCheckBox.Create(ConfigurationPage);
   EnablePinCheckBox.Parent := ConfigurationPage.Surface;
@@ -267,6 +283,7 @@ function NextButtonClick(CurPageID: Integer): Boolean;
 var
   PortNumber: Integer;
   DataPath: string;
+  McpConfigPath: string;
 begin
   Result := True;
 
@@ -299,6 +316,14 @@ begin
   if not IsHttpUrl(LmStudioUrlEdit.Text) then
   begin
     MsgBox('Enter an LM Studio server address that starts with http:// or https://.', mbError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+
+  McpConfigPath := Trim(McpConfigPathEdit.Text);
+  if (McpConfigPath <> '') and ((McpConfigPath[Length(McpConfigPath)] = '\') or (McpConfigPath[Length(McpConfigPath)] = '/')) then
+  begin
+    MsgBox('MCP config path must point to a file when provided.', mbError, MB_OK);
     Result := False;
     Exit;
   end;

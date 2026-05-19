@@ -324,3 +324,13 @@ internal sealed record LmStudioChatStats(
     [property: JsonPropertyName("tokens_per_second")] double TokensPerSecond,
     [property: JsonPropertyName("time_to_first_token_seconds")] double TimeToFirstTokenSeconds,
     [property: JsonPropertyName("model_load_time_seconds")] double? ModelLoadTimeSeconds);
+
+internal sealed record SettingsResponse(
+    string BaseUrl,
+    string ApiToken,
+    string McpConfigPath);
+
+internal sealed record SettingsUpdateRequest(
+    string BaseUrl,
+    string ApiToken,
+    string McpConfigPath);

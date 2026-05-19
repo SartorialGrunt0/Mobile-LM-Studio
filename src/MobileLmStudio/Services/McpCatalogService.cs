@@ -1,21 +1,20 @@
 using System.Text.Json;
-using Microsoft.Extensions.Options;
 using MobileLmStudio.Models;
 
 namespace MobileLmStudio.Services;
 
 internal sealed class McpCatalogService
 {
-    private readonly IOptionsMonitor<AppOptions> _options;
+    private readonly LmStudioConnectionService _connectionService;
 
-    public McpCatalogService(IOptionsMonitor<AppOptions> options)
+    public McpCatalogService(LmStudioConnectionService connectionService)
     {
-        _options = options;
+        _connectionService = connectionService;
     }
 
     public async Task<IReadOnlyList<McpServerDto>> GetServersAsync(CancellationToken cancellationToken)
     {
-        var configuredPath = _options.CurrentValue.LmStudio.McpConfigPath;
+        var configuredPath = _connectionService.McpConfigPath;
         if (string.IsNullOrWhiteSpace(configuredPath))
         {
             return [];

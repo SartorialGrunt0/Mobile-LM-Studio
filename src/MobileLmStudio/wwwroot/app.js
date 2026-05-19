@@ -23,6 +23,7 @@ const elements = {
   chatList: document.getElementById("chat-list"),
   newChatButton: document.getElementById("new-chat-button"),
   connectionPill: document.getElementById("connection-pill"),
+  settingsButton: document.getElementById("settings-button"),
   logoutButton: document.getElementById("logout-button"),
   configBanner: document.getElementById("config-banner"),
   modelSelect: document.getElementById("model-select"),
@@ -44,6 +45,14 @@ const elements = {
   loginForm: document.getElementById("login-form"),
   loginPinInput: document.getElementById("login-pin-input"),
   loginError: document.getElementById("login-error"),
+  settingsScreen: document.getElementById("settings-screen"),
+  settingsForm: document.getElementById("settings-form"),
+  settingsBaseUrl: document.getElementById("settings-base-url"),
+  settingsApiToken: document.getElementById("settings-api-token"),
+  settingsMcpPath: document.getElementById("settings-mcp-path"),
+  settingsSaveButton: document.getElementById("settings-save-button"),
+  settingsCancelButton: document.getElementById("settings-cancel-button"),
+  settingsStatus: document.getElementById("settings-status"),
 };
 
 bindEvents();
@@ -149,6 +158,14 @@ function bindEvents() {
     event.preventDefault();
     void login();
   });
+
+  elements.settingsCancelButton.addEventListener("click", () => closeSettings());
+  elements.settingsForm.addEventListener("submit", event => {
+    event.preventDefault();
+    void saveSettings();
+  });
+
+  elements.settingsButton.addEventListener("click", () => openSettings());
 }
 
 async function refreshBootstrap() {
@@ -1091,4 +1108,56 @@ function escapeHtml(value) {
 
 function escapeAttribute(value) {
   return escapeHtml(value);
+}
+
+async function openSettings() {
+  try {
+    const settings = await fetchJson("/api/settings");
+    elements.settingsBaseUrl.value = settings.baseUrl || "";
+    elements.settingsApiToken.value = settings.apiToken || "";
+    elements.settingsMcpPath.value = settings.mcpConfigPath || "";
+    elements.settingsStatus.hidden = true;
+    elements.settingsStatus.textContent = "";
+    elements.settingsScreen.hidden = false;
+  } catch (error) {
+    setStatus("Unable to load settings.", "error");
+  }
+}
+
+function closeSettings() {
+  elements.settingsScreen.hidden = true;
+}
+
+async function saveSettings() {
+  elements.settingsSaveButton.disabled = true;
+  elements.settingsStatus.hidden = true;
+  elements.settingsStatus.textContent = "";
+
+  const payload = {
+    baseUrl: elements.settingsBaseUrl.value.trim(),
+    apiToken: elements.settingsApiToken.value.trim(),
+    mcpConfigPath: elements.settingsMcpPath.value.trim(),
+  };
+
+  try {
+    await fetchJson("/api/settings", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+
+    elements.settingsStatus.textContent = "Settings saved.";
+    elements.settingsStatus.className = "settings-status success";
+    elements.settingsStatus.hidden = false;
+
+    await refreshBootstrap();
+    render();
+
+    setTimeout(() => closeSettings(), 1200);
+  } catch (error) {
+    elements.settingsStatus.textContent = error.message || "Failed to save settings.";
+    elements.settingsStatus.className = "settings-status error";
+    elements.settingsStatus.hidden = false;
+  } finally {
+    elements.settingsSaveButton.disabled = false;
+  }
 }
