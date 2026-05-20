@@ -8,6 +8,15 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$firewallRuleName = "Mobile LM Studio Web UI"
+
+try {
+    Get-NetFirewallRule -DisplayName $firewallRuleName -ErrorAction SilentlyContinue |
+        Remove-NetFirewallRule -ErrorAction SilentlyContinue
+    Write-Host "Removed Windows Firewall rule '$firewallRuleName'."
+} catch {
+}
+
 $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($service) {
     Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue

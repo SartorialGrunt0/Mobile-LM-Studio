@@ -26,57 +26,35 @@
       <header class="top-bar">
         <div class="top-bar-left">
           <button id="drawer-toggle" class="ghost-button mobile-only" type="button">Chats</button>
-          <div>
-            <p class="eyebrow">Local Web Client</p>
-            <h2 class="top-title">LM Studio</h2>
-          </div>
+          <button id="model-button" class="ghost-button" type="button">Model</button>
         </div>
         <div class="top-bar-right">
           <span id="connection-pill" class="connection-pill">Offline</span>
-          <button id="settings-button" class="ghost-button" type="button" title="Settings">&#9881;</button>
+          <button id="theme-button" class="ghost-button icon-button" type="button" title="Toggle dark mode" aria-label="Toggle dark mode">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3a1 1 0 0 1 1 1 8 8 0 1 0 8 8 1 1 0 0 1 2 0c0 6.075-4.925 11-11 11S1 18.075 1 12 5.925 1 12 1a1 1 0 0 1 0 2z"></path>
+            </svg>
+          </button>
+          <button id="settings-button" class="ghost-button icon-button" type="button" title="Settings" aria-label="Settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M19.14 12.94a7.48 7.48 0 0 0 .05-.94 7.48 7.48 0 0 0-.05-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.61-.22l-2.39.96a7.3 7.3 0 0 0-1.63-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54a7.3 7.3 0 0 0-1.63.94l-2.39-.96a.5.5 0 0 0-.61.22L2.7 8.84a.5.5 0 0 0 .12.64l2.03 1.58a7.48 7.48 0 0 0-.05.94 7.48 7.48 0 0 0 .05.94L2.82 14.52a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .61.22l2.39-.96c.5.39 1.04.71 1.63.94l.36 2.54a.5.5 0 0 0 .5.42h3.84a.5.5 0 0 0 .5-.42l.36-2.54c.59-.23 1.13-.55 1.63-.94l2.39.96a.5.5 0 0 0 .61-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5z"></path>
+            </svg>
+          </button>
           <button id="logout-button" class="ghost-button" type="button">Lock</button>
         </div>
       </header>
 
       <section id="config-banner" class="config-banner" hidden></section>
 
-      <section class="controls-panel">
-        <div class="control-grid">
-          <label class="field">
-            <span>Model</span>
-            <select id="model-select"></select>
-          </label>
-
-          <div class="button-stack">
-            <button id="load-model-button" class="secondary-button" type="button">Load</button>
-            <button id="unload-model-button" class="ghost-button" type="button">Unload</button>
-          </div>
-
-          <label class="field">
-            <span>Context</span>
-            <input id="context-length-input" type="number" min="512" step="512" />
-          </label>
-
-          <label class="field">
-            <span>Reasoning</span>
-            <select id="reasoning-select"></select>
-          </label>
+      <section id="chat-toolbar" class="chat-toolbar">
+        <div>
+          <p class="eyebrow">Current Chat</p>
+          <h2 id="current-chat-title" class="chat-toolbar-title">New Chat</h2>
         </div>
-
-        <div id="model-meta" class="model-meta"></div>
-
-        <details class="advanced-panel">
-          <summary>Prompt and Tools</summary>
-          <label class="field wide-field">
-            <span>System Prompt</span>
-            <textarea id="system-prompt-input" rows="3" placeholder="Optional system prompt"></textarea>
-          </label>
-
-          <div class="mcp-section">
-            <p class="subhead">MCP Servers</p>
-            <div id="mcp-list" class="chip-list"></div>
-          </div>
-        </details>
+        <div class="chat-toolbar-actions">
+          <button id="export-chat-button" class="secondary-button" type="button">Export</button>
+          <button id="delete-chat-button" class="ghost-button" type="button">Delete</button>
+        </div>
       </section>
 
       <section id="status-bar" class="status-bar">Ready</section>
@@ -90,10 +68,19 @@
       </main>
 
       <form id="composer-form" class="composer">
-        <label class="composer-field">
-          <span>Message</span>
-          <textarea id="message-input" rows="1" placeholder="Send a message"></textarea>
-        </label>
+        <div class="composer-main">
+          <div class="composer-toolbar">
+            <button id="attach-image-button" class="ghost-button attach-button" type="button">Image</button>
+            <button id="attach-file-button" class="ghost-button attach-button" type="button">File</button>
+            <input id="image-input" type="file" accept="image/*" multiple hidden />
+            <input id="file-input" type="file" multiple hidden />
+          </div>
+          <div id="composer-attachments" class="composer-attachments" hidden></div>
+          <label class="composer-field">
+            <span>Message</span>
+            <textarea id="message-input" rows="1" placeholder="Send a message"></textarea>
+          </label>
+        </div>
         <button id="send-button" class="primary-button send-button" type="submit">Send</button>
       </form>
     </div>
@@ -134,6 +121,57 @@
       </div>
       <p id="settings-status" class="settings-status" hidden></p>
     </form>
+  </section>
+
+  <section id="model-screen" class="settings-screen" hidden>
+    <div class="settings-card model-card">
+      <div class="modal-head">
+        <div>
+          <p class="eyebrow">Model Controls</p>
+          <h2>Model</h2>
+        </div>
+        <button id="model-close-button" class="ghost-button" type="button">Close</button>
+      </div>
+
+      <section class="controls-panel controls-panel-modal">
+        <div class="control-grid">
+          <label class="field">
+            <span>Model</span>
+            <select id="model-select"></select>
+          </label>
+
+          <div class="button-stack">
+            <button id="load-model-button" class="secondary-button" type="button">Load</button>
+            <button id="unload-model-button" class="ghost-button" type="button">Unload</button>
+          </div>
+
+          <label class="field">
+            <span>Context</span>
+            <input id="context-length-input" type="number" min="512" step="512" />
+          </label>
+
+          <label class="field">
+            <span>Reasoning</span>
+            <select id="reasoning-select"></select>
+          </label>
+        </div>
+
+        <div id="model-meta" class="model-meta"></div>
+
+        <details class="advanced-panel">
+          <summary>Prompt and Tools</summary>
+          <label class="field wide-field">
+            <span>System Prompt</span>
+            <textarea id="system-prompt-input" rows="3" placeholder="Optional system prompt"></textarea>
+          </label>
+
+          <div class="mcp-section">
+            <p class="subhead">MCP Servers</p>
+            <div id="mcp-list" class="chip-list"></div>
+          </div>
+        </details>
+      </section>
+    </div>
   </section>
 
   <script src="app.js?v=20260513" type="module"></script>

@@ -90,6 +90,15 @@ internal sealed record ChatDetailDto(
     DateTimeOffset UpdatedAt,
     IReadOnlyList<ChatMessageDto> Messages);
 
+internal sealed record ChatAttachmentDto(
+    string Kind,
+    string Name,
+    string? ContentType,
+    long SizeBytes,
+    string? DataUrl,
+    string? TextContent,
+    bool Truncated);
+
 internal sealed record ChatMessageDto(
     string Id,
     string Role,
@@ -97,6 +106,8 @@ internal sealed record ChatMessageDto(
     string? Reasoning,
     IReadOnlyList<ToolCallDto> ToolCalls,
     IReadOnlyList<InvalidToolCallDto> InvalidToolCalls,
+    IReadOnlyList<ChatAttachmentDto> Attachments,
+    string? ModelKey,
     ChatStatsDto? Stats,
     DateTimeOffset CreatedAt);
 
@@ -116,7 +127,8 @@ internal sealed record ChatStatsDto(
     int ReasoningOutputTokens,
     double TokensPerSecond,
     double TimeToFirstTokenSeconds,
-    double? ModelLoadTimeSeconds);
+    double? ModelLoadTimeSeconds,
+    int? ContextLimit);
 
 internal sealed record ChatStreamRequest(
     string? ChatId,
@@ -125,7 +137,8 @@ internal sealed record ChatStreamRequest(
     string? SystemPrompt,
     string? Reasoning,
     int? ContextLength,
-    string[]? McpServerIds);
+    string[]? McpServerIds,
+    ChatAttachmentDto[]? Attachments);
 
 internal sealed record AssistantPersistenceResult(
     string Content,
@@ -133,7 +146,19 @@ internal sealed record AssistantPersistenceResult(
     IReadOnlyList<ToolCallDto> ToolCalls,
     IReadOnlyList<InvalidToolCallDto> InvalidToolCalls,
     ChatStatsDto? Stats,
-    string? ResponseId);
+    string? ResponseId,
+    string ModelKey);
+
+internal sealed record RetryPromptContext(
+    string ChatId,
+    string Model,
+    string Input,
+    string? SystemPrompt,
+    string? Reasoning,
+    int? ContextLength,
+    IReadOnlyList<string> McpServerIds,
+    IReadOnlyList<ChatAttachmentDto> Attachments,
+    string? PreviousResponseId);
 
 internal sealed record StoredChatRecord(
     string Id,
@@ -228,7 +253,7 @@ internal sealed class LmStudioChatRequest
     public string Model { get; init; } = string.Empty;
 
     [JsonPropertyName("input")]
-    public string Input { get; init; } = string.Empty;
+    public object Input { get; init; } = string.Empty;
 
     [JsonPropertyName("system_prompt")]
     public string? SystemPrompt { get; init; }

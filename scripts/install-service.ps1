@@ -227,6 +227,24 @@ function Assert-TcpPortAvailable {
     throw "Web UI port $Port is already in use. Choose a different port or stop the process using it before installing Mobile LM Studio."
 }
 
+function Ensure-WebFirewallRule {
+    param([int]$Port)
+
+    $ruleName = "Mobile LM Studio Web UI"
+
+    try {
+        Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue |
+            Remove-NetFirewallRule -ErrorAction SilentlyContinue
+    } catch {
+    }
+
+    try {
+        New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow -Enabled True -Profile Any -Protocol TCP -LocalPort $Port | Out-Null
+    } catch {
+        throw "Unable to create the Windows Firewall rule '$ruleName' for TCP port $Port. $($_.Exception.Message)"
+    }
+}
+
 function Get-RecentStartupFailureMessage {
     param(
         [string]$ProcessName = "MobileLmStudio.exe",
@@ -457,6 +475,7 @@ if ($service) {
 }
 
 & sc.exe failure $ServiceName "reset= 86400" "actions= restart/5000/restart/5000/restart/15000" | Out-Null
+Ensure-WebFirewallRule -Port $listenEndpoint.Port
 Start-Service -Name $ServiceName
 Wait-ForServicePort -ServiceName $ServiceName -ProbeHost $listenEndpoint.Host -Port $listenEndpoint.Port -ProcessName "MobileLmStudio.exe"
 
@@ -466,5 +485,6 @@ if (-not [string]::IsNullOrWhiteSpace($resolvedFailurePath) -and (Test-Path $res
 
 Write-Host "Installed Mobile LM Studio as service '$ServiceName'."
 Write-Host "Web URL: $ListenUrl"
+Write-Host "Windows Firewall: opened TCP port $($listenEndpoint.Port)."
 Write-Host "Install path: $resolvedInstallPath"
 Write-Host "Data file: $DataPath"

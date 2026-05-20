@@ -13,6 +13,8 @@ const state = {
   statusText: "Ready",
   statusTone: "neutral",
   isSending: false,
+  theme: "light",
+  composerAttachments: [],
 };
 
 const elements = {
@@ -23,9 +25,15 @@ const elements = {
   chatList: document.getElementById("chat-list"),
   newChatButton: document.getElementById("new-chat-button"),
   connectionPill: document.getElementById("connection-pill"),
+  modelButton: document.getElementById("model-button"),
+  themeButton: document.getElementById("theme-button"),
   settingsButton: document.getElementById("settings-button"),
   logoutButton: document.getElementById("logout-button"),
   configBanner: document.getElementById("config-banner"),
+  chatToolbar: document.getElementById("chat-toolbar"),
+  currentChatTitle: document.getElementById("current-chat-title"),
+  exportChatButton: document.getElementById("export-chat-button"),
+  deleteChatButton: document.getElementById("delete-chat-button"),
   modelSelect: document.getElementById("model-select"),
   loadModelButton: document.getElementById("load-model-button"),
   unloadModelButton: document.getElementById("unload-model-button"),
@@ -39,12 +47,19 @@ const elements = {
   emptyState: document.getElementById("empty-state"),
   messageList: document.getElementById("message-list"),
   composerForm: document.getElementById("composer-form"),
+  composerAttachments: document.getElementById("composer-attachments"),
+  attachImageButton: document.getElementById("attach-image-button"),
+  attachFileButton: document.getElementById("attach-file-button"),
+  imageInput: document.getElementById("image-input"),
+  fileInput: document.getElementById("file-input"),
   messageInput: document.getElementById("message-input"),
   sendButton: document.getElementById("send-button"),
   loginScreen: document.getElementById("login-screen"),
   loginForm: document.getElementById("login-form"),
   loginPinInput: document.getElementById("login-pin-input"),
   loginError: document.getElementById("login-error"),
+  modelScreen: document.getElementById("model-screen"),
+  modelCloseButton: document.getElementById("model-close-button"),
   settingsScreen: document.getElementById("settings-screen"),
   settingsForm: document.getElementById("settings-form"),
   settingsBaseUrl: document.getElementById("settings-base-url"),
@@ -55,6 +70,7 @@ const elements = {
   settingsStatus: document.getElementById("settings-status"),
 };
 
+applyTheme(loadThemePreference());
 bindEvents();
 void initialize();
 
@@ -80,6 +96,14 @@ function bindEvents() {
   elements.drawerToggle.addEventListener("click", () => setDrawerOpen(true));
   elements.drawerClose.addEventListener("click", () => setDrawerOpen(false));
   elements.drawerBackdrop.addEventListener("click", () => setDrawerOpen(false));
+  elements.modelButton.addEventListener("click", () => openModelMenu());
+  elements.modelCloseButton.addEventListener("click", () => closeModelMenu());
+  elements.modelScreen.addEventListener("click", event => {
+    if (event.target === elements.modelScreen) {
+      closeModelMenu();
+    }
+  });
+  elements.themeButton.addEventListener("click", () => toggleTheme());
   elements.newChatButton.addEventListener("click", () => {
     startNewDraft();
     render();
@@ -87,12 +111,39 @@ function bindEvents() {
   });
 
   elements.chatList.addEventListener("click", event => {
+    const deleteButton = event.target.closest("button[data-delete-chat-id]");
+    if (deleteButton) {
+      void deleteChat(deleteButton.dataset.deleteChatId);
+      return;
+    }
+
     const button = event.target.closest("button[data-chat-id]");
     if (!button) {
       return;
     }
 
     void openChat(button.dataset.chatId);
+  });
+
+  elements.messageList.addEventListener("click", event => {
+    const retryButton = event.target.closest("button[data-retry-chat]");
+    if (retryButton) {
+      void retryLatestPrompt();
+      return;
+    }
+
+    const exportButton = event.target.closest("button[data-export-message-id]");
+    if (exportButton?.dataset.exportMessageId) {
+      void exportMessage(exportButton.dataset.exportMessageId);
+      return;
+    }
+  });
+
+  elements.composerAttachments.addEventListener("click", event => {
+    const removeAttachmentButton = event.target.closest("button[data-remove-attachment-index]");
+    if (removeAttachmentButton?.dataset.removeAttachmentIndex) {
+      removeComposerAttachment(Number.parseInt(removeAttachmentButton.dataset.removeAttachmentIndex, 10));
+    }
   });
 
   elements.mcpList.addEventListener("click", event => {
@@ -142,6 +193,17 @@ function bindEvents() {
     void sendMessage();
   });
 
+  elements.attachImageButton.addEventListener("click", () => elements.imageInput.click());
+  elements.attachFileButton.addEventListener("click", () => elements.fileInput.click());
+  elements.imageInput.addEventListener("change", event => {
+    void addComposerAttachments(event.target.files, "image");
+    event.target.value = "";
+  });
+  elements.fileInput.addEventListener("change", event => {
+    void addComposerAttachments(event.target.files, "file");
+    event.target.value = "";
+  });
+
   elements.messageInput.addEventListener("input", autoResizeComposer);
   elements.messageInput.addEventListener("keydown", event => {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -152,6 +214,8 @@ function bindEvents() {
 
   elements.loadModelButton.addEventListener("click", () => void loadSelectedModel());
   elements.unloadModelButton.addEventListener("click", () => void unloadSelectedModel());
+  elements.exportChatButton.addEventListener("click", () => void exportCurrentChat());
+  elements.deleteChatButton.addEventListener("click", () => void deleteChat(state.currentChatId));
   elements.logoutButton.addEventListener("click", () => void logout());
 
   elements.loginForm.addEventListener("submit", event => {
@@ -160,6 +224,11 @@ function bindEvents() {
   });
 
   elements.settingsCancelButton.addEventListener("click", () => closeSettings());
+  elements.settingsScreen.addEventListener("click", event => {
+    if (event.target === elements.settingsScreen) {
+      closeSettings();
+    }
+  });
   elements.settingsForm.addEventListener("submit", event => {
     event.preventDefault();
     void saveSettings();
@@ -401,7 +470,8 @@ async function sendMessage() {
   }
 
   const input = elements.messageInput.value.trim();
-  if (!input) {
+  const attachments = cloneAttachments(state.composerAttachments);
+  if (!input && attachments.length === 0) {
     return;
   }
 
@@ -418,6 +488,7 @@ async function sendMessage() {
     reasoning: normalizeReasoningValue(),
     contextLength: parseOptionalNumber(state.selectedContextLength),
     mcpServerIds: Array.from(state.selectedMcpServerIds),
+    attachments,
   };
 
   if (!state.currentChat) {
@@ -432,6 +503,8 @@ async function sendMessage() {
     toolCalls: [],
     invalidToolCalls: [],
     stats: null,
+    attachments: [],
+    modelKey: state.selectedModel,
     createdAt: new Date().toISOString(),
     pending: true,
   };
@@ -444,11 +517,13 @@ async function sendMessage() {
     reasoning: null,
     toolCalls: [],
     invalidToolCalls: [],
+    attachments,
+    modelKey: state.selectedModel,
     stats: null,
     createdAt: new Date().toISOString(),
   });
   state.currentChat.messages.push(pendingAssistant);
-  state.currentChat.title = summarizeTitle(input);
+  state.currentChat.title = summarizeTitle(input || attachments[0]?.name || "New Chat");
   state.currentChat.modelKey = state.selectedModel;
   state.currentChat.systemPrompt = state.systemPrompt;
   state.currentChat.reasoning = normalizeReasoningValue();
@@ -456,6 +531,7 @@ async function sendMessage() {
   state.currentChat.selectedMcpServerIds = Array.from(state.selectedMcpServerIds);
   state.isSending = true;
   elements.messageInput.value = "";
+  state.composerAttachments = [];
   autoResizeComposer();
   setStatus("Waiting for LM Studio...", "busy");
   render();
@@ -486,7 +562,7 @@ async function sendMessage() {
     }
 
     await consumeEventStream(response.body, event => applyStreamEvent(event, pendingAssistant));
-    await refreshChats();
+    await Promise.all([refreshChats(), refreshModels()]);
 
     if (state.currentChatId) {
       await openChat(state.currentChatId, true);
@@ -507,6 +583,7 @@ async function sendMessage() {
 function applyStreamEvent(event, pendingAssistant) {
   switch (event.type) {
     case "chat.start":
+      pendingAssistant.modelKey = resolveModelKeyFromInstanceId(event.data.model_instance_id) || pendingAssistant.modelKey || state.selectedModel;
       setStatus("Connected to LM Studio.", "busy");
       break;
     case "model_load.start":
@@ -613,6 +690,7 @@ function applyFinalResponse(message, data) {
   message.reasoning = reasoningParts.length > 0 ? reasoningParts.join("\n\n") : message.reasoning;
   message.toolCalls = toolCalls.length > 0 ? toolCalls : message.toolCalls;
   message.invalidToolCalls = invalidToolCalls.length > 0 ? invalidToolCalls : message.invalidToolCalls;
+  message.modelKey = resolveModelKeyFromInstanceId(result.model_instance_id) || message.modelKey || state.selectedModel;
   message.stats = result.stats
     ? {
         inputTokens: result.stats.inputTokens,
@@ -621,6 +699,7 @@ function applyFinalResponse(message, data) {
         tokensPerSecond: result.stats.tokensPerSecond,
         timeToFirstTokenSeconds: result.stats.timeToFirstTokenSeconds,
         modelLoadTimeSeconds: result.stats.modelLoadTimeSeconds,
+        contextLimit: parseOptionalNumber(state.selectedContextLength),
       }
     : null;
   message.pending = false;
@@ -634,8 +713,10 @@ function render() {
   renderAuthState();
   renderBanner();
   renderControls();
+  renderChatToolbar();
   renderChatList();
   renderMessages();
+  renderComposerAttachments();
   renderStatus();
 }
 
@@ -683,8 +764,22 @@ function renderControls() {
   renderMcpServers();
   elements.systemPromptInput.value = state.systemPrompt;
   elements.contextLengthInput.value = state.selectedContextLength;
-  elements.sendButton.disabled = state.isSending || !state.bootstrap?.authenticated && state.bootstrap?.requireLogin;
-  elements.messageInput.disabled = state.isSending;
+  const locked = !state.bootstrap?.authenticated && state.bootstrap?.requireLogin;
+  elements.sendButton.disabled = state.isSending || locked || !state.selectedModel;
+  elements.messageInput.disabled = state.isSending || locked;
+  elements.attachImageButton.disabled = state.isSending || locked;
+  elements.attachFileButton.disabled = state.isSending || locked;
+  elements.themeButton.setAttribute("aria-pressed", state.theme === "dark" ? "true" : "false");
+}
+
+function renderChatToolbar() {
+  const title = state.currentChat?.title || "New Chat";
+  elements.currentChatTitle.textContent = title;
+
+  const hasSavedChat = Boolean(state.currentChatId);
+  elements.exportChatButton.disabled = !hasSavedChat;
+  elements.deleteChatButton.disabled = !hasSavedChat;
+  elements.chatToolbar.classList.toggle("is-draft", !hasSavedChat);
 }
 
 function renderModelOptions() {
@@ -697,7 +792,7 @@ function renderModelOptions() {
   }
 
   elements.modelSelect.innerHTML = models
-    .map(model => `<option value="${escapeAttribute(model.key)}" ${model.key === state.selectedModel ? "selected" : ""}>${escapeHtml(model.displayName)}</option>`)
+    .map(model => `<option value="${escapeAttribute(model.key)}" ${model.key === state.selectedModel ? "selected" : ""}>${escapeHtml(buildModelOptionLabel(model))}</option>`)
     .join("");
 }
 
@@ -739,6 +834,8 @@ function renderModelDetails() {
   }
 
   const metaParts = [
+    model.key,
+    describeModelSource(model),
     loadedCount > 0 ? `${loadedCount} instance loaded` : "auto-load on send",
     model.paramsString || model.architecture || "",
     `${formatInteger(model.maxContextLength)} max ctx`,
@@ -776,11 +873,14 @@ function renderChatList() {
 
   elements.chatList.innerHTML = state.chats
     .map(chat => `
-      <button type="button" class="chat-item${chat.id === state.currentChatId ? " active" : ""}" data-chat-id="${escapeAttribute(chat.id)}">
-        <span class="chat-title">${escapeHtml(chat.title)}</span>
-        <span class="chat-meta">${escapeHtml(chat.modelKey)} • ${escapeHtml(formatRelativeDate(chat.updatedAt))}</span>
-        <span class="chat-preview">${escapeHtml(chat.preview || "Saved chat")}</span>
-      </button>`)
+      <article class="chat-item${chat.id === state.currentChatId ? " active" : ""}">
+        <button type="button" class="chat-open" data-chat-id="${escapeAttribute(chat.id)}">
+          <span class="chat-title">${escapeHtml(chat.title)}</span>
+          <span class="chat-meta">${escapeHtml(chat.modelKey)} • ${escapeHtml(formatRelativeDate(chat.updatedAt))}</span>
+          <span class="chat-preview">${escapeHtml(chat.preview || "Saved chat")}</span>
+        </button>
+        <button type="button" class="chat-delete" data-delete-chat-id="${escapeAttribute(chat.id)}" aria-label="Delete ${escapeAttribute(chat.title)}">Delete</button>
+      </article>`)
     .join("");
 }
 
@@ -800,9 +900,9 @@ function renderStatus() {
 }
 
 function renderMessageCard(message) {
-  const roleLabel = message.role === "user" ? "You" : "Model";
+  const roleLabel = message.role === "user" ? "You" : resolveAssistantLabel(message);
   const contentBlock = message.content
-    ? `<div class="message-body">${escapeHtml(message.content)}</div>`
+    ? `<div class="message-body markdown-body">${renderMarkdown(message.content)}</div>`
     : message.pending
       ? '<div class="message-body">Waiting for tokens...</div>'
       : "";
@@ -811,8 +911,15 @@ function renderMessageCard(message) {
     ? `
       <details class="details-block">
         <summary>Thinking</summary>
-        <div class="details-body">${escapeHtml(message.reasoning)}</div>
+        <div class="details-body markdown-body">${renderMarkdown(message.reasoning)}</div>
       </details>`
+    : "";
+
+  const attachmentsBlock = message.attachments?.length
+    ? `
+      <div class="attachment-list">
+        ${message.attachments.map(renderMessageAttachment).join("")}
+      </div>`
     : "";
 
   const toolCallsBlock = message.toolCalls?.length
@@ -843,6 +950,17 @@ function renderMessageCard(message) {
       </div>`
     : "";
 
+  const contextBlock = renderContextMeter(message);
+  const canExport = Boolean(state.currentChatId) && !message.pending;
+  const canRetry = Boolean(state.currentChatId) && !message.pending && message.role === "assistant" && isLatestAssistantMessage(message);
+  const actionsBlock = canExport || canRetry
+    ? `
+      <div class="message-actions">
+        ${canRetry ? '<button type="button" class="ghost-button message-action-button" data-retry-chat="true">Retry Prompt</button>' : ""}
+        ${canExport ? `<button type="button" class="ghost-button message-action-button" data-export-message-id="${escapeAttribute(message.id)}">Export Markdown</button>` : ""}
+      </div>`
+    : "";
+
   return `
     <article class="message-card ${message.role === "user" ? "user" : "assistant"}">
       <div class="message-head">
@@ -850,10 +968,13 @@ function renderMessageCard(message) {
         <time class="message-time">${escapeHtml(formatClock(message.createdAt))}</time>
       </div>
       ${contentBlock}
+      ${attachmentsBlock}
       ${reasoningBlock}
       ${toolCallsBlock}
       ${invalidToolCallsBlock}
+      ${contextBlock}
       ${statsBlock}
+      ${actionsBlock}
     </article>`;
 }
 
@@ -1110,6 +1231,634 @@ function escapeAttribute(value) {
   return escapeHtml(value);
 }
 
+function renderComposerAttachments() {
+  if (state.composerAttachments.length === 0) {
+    elements.composerAttachments.hidden = true;
+    elements.composerAttachments.innerHTML = "";
+    return;
+  }
+
+  elements.composerAttachments.hidden = false;
+  elements.composerAttachments.innerHTML = state.composerAttachments
+    .map((attachment, index) => `
+      <article class="composer-attachment${attachment.kind === "image" ? " image" : ""}">
+        ${attachment.kind === "image" && attachment.dataUrl ? `<img src="${escapeAttribute(attachment.dataUrl)}" alt="${escapeAttribute(attachment.name)}" loading="lazy" />` : ""}
+        <div class="composer-attachment-meta">
+          <strong>${escapeHtml(attachment.name)}</strong>
+          <span>${escapeHtml(formatAttachmentMeta(attachment))}</span>
+        </div>
+        <button type="button" class="ghost-button attachment-remove-button" data-remove-attachment-index="${index}">Remove</button>
+      </article>`)
+    .join("");
+}
+
+function renderMessageAttachment(attachment) {
+  return `
+    <article class="message-attachment${attachment.kind === "image" ? " image" : ""}">
+      ${attachment.kind === "image" && attachment.dataUrl ? `<img src="${escapeAttribute(attachment.dataUrl)}" alt="${escapeAttribute(attachment.name)}" loading="lazy" />` : ""}
+      <div class="message-attachment-meta">
+        <strong>${escapeHtml(attachment.name)}</strong>
+        <span>${escapeHtml(formatAttachmentMeta(attachment))}</span>
+      </div>
+    </article>`;
+}
+
+function renderContextMeter(message) {
+  const limit = message.stats?.contextLimit;
+  const used = message.stats?.inputTokens;
+  if (!limit || !used) {
+    return "";
+  }
+
+  const remaining = Math.max(limit - used, 0);
+  const percent = Math.max(4, Math.min(100, (used / limit) * 100));
+
+  return `
+    <div class="context-meter">
+      <div class="context-meter-head">
+        <span>${escapeHtml(`${formatInteger(used)} used`)}</span>
+        <span>${escapeHtml(`${formatInteger(remaining)} remaining`)}</span>
+      </div>
+      <div class="context-meter-bar" aria-hidden="true">
+        <span style="width: ${percent}%"></span>
+      </div>
+    </div>`;
+}
+
+function resolveAssistantLabel(message) {
+  return message.modelKey || state.currentChat?.modelKey || state.selectedModel || "Model";
+}
+
+function isLatestAssistantMessage(message) {
+  const latestAssistant = [...(state.currentChat?.messages || [])]
+    .reverse()
+    .find(candidate => candidate.role === "assistant");
+
+  return latestAssistant?.id === message.id;
+}
+
+function buildModelOptionLabel(model) {
+  return [
+    model.key,
+    describeModelSource(model),
+    (model.loadedInstances || []).length > 0 ? "Loaded" : null,
+  ].filter(Boolean).join(" • ");
+}
+
+function describeModelSource(model) {
+  const format = String(model?.format || "").toLowerCase();
+  if (format === "gguf" || format === "mlx") {
+    return "Local";
+  }
+
+  return model?.format ? capitalize(model.format) : "Remote";
+}
+
+function resolveModelKeyFromInstanceId(instanceId) {
+  if (!instanceId) {
+    return null;
+  }
+
+  return state.models.find(model => (model.loadedInstances || []).some(instance => instance.id === instanceId) || model.key === instanceId)?.key || null;
+}
+
+function openModelMenu() {
+  elements.settingsScreen.hidden = true;
+  elements.modelScreen.hidden = false;
+}
+
+function closeModelMenu() {
+  elements.modelScreen.hidden = true;
+}
+
+function loadThemePreference() {
+  try {
+    return localStorage.getItem("mls-theme") === "dark" ? "dark" : "light";
+  } catch {
+    return "light";
+  }
+}
+
+function applyTheme(theme) {
+  state.theme = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = state.theme;
+
+  try {
+    localStorage.setItem("mls-theme", state.theme);
+  } catch {
+  }
+}
+
+function toggleTheme() {
+  applyTheme(state.theme === "dark" ? "light" : "dark");
+  renderControls();
+}
+
+async function deleteChat(chatId) {
+  if (!chatId || state.isSending) {
+    return;
+  }
+
+  if (!window.confirm("Delete this chat permanently?")) {
+    return;
+  }
+
+  try {
+    await fetchJson(`/api/chats/${encodeURIComponent(chatId)}`, {
+      method: "DELETE",
+    });
+
+    const deletingCurrent = state.currentChatId === chatId;
+    await refreshChats();
+
+    if (deletingCurrent) {
+      state.currentChatId = null;
+      state.currentChat = null;
+
+      if (state.chats.length > 0) {
+        await openChat(state.chats[0].id, true);
+      } else {
+        startNewDraft();
+        render();
+      }
+    } else {
+      render();
+    }
+
+    setStatus("Chat deleted.", "neutral");
+  } catch (error) {
+    setStatus(error.message || "Unable to delete chat.", "error");
+  }
+}
+
+async function exportCurrentChat() {
+  if (!state.currentChatId) {
+    return;
+  }
+
+  try {
+    await downloadFromEndpoint(`/api/chats/${encodeURIComponent(state.currentChatId)}/export`);
+    setStatus("Chat exported.", "neutral");
+  } catch (error) {
+    setStatus(error.message || "Unable to export chat.", "error");
+  }
+}
+
+async function exportMessage(messageId) {
+  if (!state.currentChatId || !messageId) {
+    return;
+  }
+
+  try {
+    await downloadFromEndpoint(`/api/chats/${encodeURIComponent(state.currentChatId)}/messages/${encodeURIComponent(messageId)}/export`);
+    setStatus("Message exported.", "neutral");
+  } catch (error) {
+    setStatus(error.message || "Unable to export message.", "error");
+  }
+}
+
+async function downloadFromEndpoint(url) {
+  const response = await fetch(url, {
+    credentials: "same-origin",
+  });
+
+  if (response.status === 401) {
+    await handleUnauthorized();
+    throw new Error("Authentication required.");
+  }
+
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+
+  const fileName = extractFileName(response.headers.get("content-disposition")) || "export.md";
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = fileName;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
+function extractFileName(contentDisposition) {
+  if (!contentDisposition) {
+    return null;
+  }
+
+  const utfMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utfMatch?.[1]) {
+    return decodeURIComponent(utfMatch[1]);
+  }
+
+  const fileNameMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+  return fileNameMatch?.[1] || null;
+}
+
+async function retryLatestPrompt() {
+  if (state.isSending || !state.currentChatId) {
+    return;
+  }
+
+  const pendingAssistant = {
+    id: `retry_${Date.now()}`,
+    role: "assistant",
+    content: "",
+    reasoning: "",
+    toolCalls: [],
+    invalidToolCalls: [],
+    attachments: [],
+    modelKey: state.currentChat?.modelKey || state.selectedModel,
+    stats: null,
+    createdAt: new Date().toISOString(),
+    pending: true,
+  };
+
+  state.currentChat.messages = state.currentChat.messages || [];
+  state.currentChat.messages.push(pendingAssistant);
+  state.isSending = true;
+  setStatus("Retrying latest prompt...", "busy");
+  render();
+
+  try {
+    const response = await fetch(`/api/chats/${encodeURIComponent(state.currentChatId)}/retry/stream`, {
+      method: "POST",
+      credentials: "same-origin",
+    });
+
+    if (response.status === 401) {
+      await handleUnauthorized();
+      throw new Error("Authentication required.");
+    }
+
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
+
+    await consumeEventStream(response.body, event => applyStreamEvent(event, pendingAssistant));
+    await Promise.all([refreshChats(), refreshModels()]);
+
+    if (state.currentChatId) {
+      await openChat(state.currentChatId, true);
+    }
+
+    setStatus("Response complete.", "neutral");
+  } catch (error) {
+    pendingAssistant.content = error.message || "Unable to retry the latest prompt.";
+    pendingAssistant.pending = false;
+    setStatus(error.message || "Unable to retry the latest prompt.", "error");
+    renderMessages();
+  } finally {
+    state.isSending = false;
+    render();
+  }
+}
+
+async function addComposerAttachments(fileList, requestedKind) {
+  const files = Array.from(fileList || []);
+  if (files.length === 0) {
+    return;
+  }
+
+  const nextAttachments = [];
+  for (const file of files) {
+    try {
+      if (requestedKind === "image" || file.type.startsWith("image/")) {
+        nextAttachments.push(await buildImageAttachment(file));
+      } else {
+        nextAttachments.push(await buildFileAttachment(file));
+      }
+    } catch (error) {
+      setStatus(error.message || `Unable to attach ${file.name}.`, "error");
+    }
+  }
+
+  if (nextAttachments.length === 0) {
+    return;
+  }
+
+  state.composerAttachments = [...state.composerAttachments, ...nextAttachments];
+  renderComposerAttachments();
+}
+
+function removeComposerAttachment(index) {
+  if (!Number.isInteger(index) || index < 0 || index >= state.composerAttachments.length) {
+    return;
+  }
+
+  state.composerAttachments = state.composerAttachments.filter((_, attachmentIndex) => attachmentIndex !== index);
+  renderComposerAttachments();
+}
+
+function cloneAttachments(attachments) {
+  return (attachments || []).map(attachment => ({ ...attachment }));
+}
+
+async function buildImageAttachment(file) {
+  if (!file.type.startsWith("image/")) {
+    throw new Error(`${file.name} is not an image.`);
+  }
+
+  return {
+    kind: "image",
+    name: file.name,
+    contentType: file.type || null,
+    sizeBytes: file.size,
+    dataUrl: await readFileAsDataUrl(file),
+    textContent: null,
+    truncated: false,
+  };
+}
+
+async function buildFileAttachment(file) {
+  if (file.type.startsWith("image/")) {
+    return buildImageAttachment(file);
+  }
+
+  let textContent = null;
+  let truncated = false;
+  if (isTextLikeFile(file)) {
+    textContent = await file.text();
+    if (textContent.length > 120000) {
+      textContent = `${textContent.slice(0, 120000)}\n\n[truncated]`;
+      truncated = true;
+    }
+  }
+
+  return {
+    kind: "file",
+    name: file.name,
+    contentType: file.type || null,
+    sizeBytes: file.size,
+    dataUrl: null,
+    textContent,
+    truncated,
+  };
+}
+
+function isTextLikeFile(file) {
+  const type = (file.type || "").toLowerCase();
+  if (!type) {
+    return /\.(txt|md|json|js|ts|tsx|jsx|html|css|xml|yaml|yml|csv|log|cs|py|java|go|rs|sql)$/i.test(file.name);
+  }
+
+  return type.startsWith("text/") || /(json|javascript|xml|yaml|csv|markdown)/.test(type);
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error(`Unable to read ${file.name}.`));
+    reader.readAsDataURL(file);
+  });
+}
+
+function formatAttachmentMeta(attachment) {
+  const parts = [formatBytes(attachment.sizeBytes)];
+  if (attachment.contentType) {
+    parts.push(attachment.contentType);
+  }
+  if (attachment.truncated) {
+    parts.push("truncated");
+  }
+  return parts.join(" • ");
+}
+
+function formatBytes(value) {
+  const size = Number(value || 0);
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(1)} KB`;
+  }
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+  function renderMarkdown(value) {
+    const normalized = sanitizeMarkdownSource(String(value || "")).replace(/\r/g, "");
+    if (!normalized.trim()) {
+      return "";
+    }
+
+    const lines = normalized.split("\n");
+    let html = "";
+    let paragraphLines = [];
+    let listType = null;
+    let listItems = [];
+    let quoteLines = [];
+    let codeLanguage = null;
+    let codeLines = [];
+
+    const flushParagraph = () => {
+      if (paragraphLines.length === 0) {
+        return;
+      }
+
+      html += `<p>${renderInlineMarkdown(paragraphLines.join(" ").trim())}</p>`;
+      paragraphLines = [];
+    };
+
+    const flushList = () => {
+      if (!listType || listItems.length === 0) {
+        return;
+      }
+
+      html += `<${listType}>${listItems.map(item => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</${listType}>`;
+      listType = null;
+      listItems = [];
+    };
+
+    const flushQuote = () => {
+      if (quoteLines.length === 0) {
+        return;
+      }
+
+      html += `<blockquote>${renderMarkdown(quoteLines.join("\n"))}</blockquote>`;
+      quoteLines = [];
+    };
+
+    const flushCode = () => {
+      if (codeLanguage === null) {
+        return;
+      }
+
+      const languageClass = codeLanguage ? ` class="language-${escapeAttribute(codeLanguage)}"` : "";
+      html += `<pre class="markdown-code"><code${languageClass}>${escapeHtml(codeLines.join("\n"))}</code></pre>`;
+      codeLanguage = null;
+      codeLines = [];
+    };
+
+    for (const line of lines) {
+      const fenceMatch = line.match(/^```([\w-]+)?\s*$/);
+      if (codeLanguage !== null) {
+        if (fenceMatch) {
+          flushCode();
+        } else {
+          codeLines.push(line);
+        }
+        continue;
+      }
+
+      if (fenceMatch) {
+        flushParagraph();
+        flushList();
+        flushQuote();
+        codeLanguage = fenceMatch[1] || "";
+        continue;
+      }
+
+      if (!line.trim()) {
+        flushParagraph();
+        flushList();
+        flushQuote();
+        continue;
+      }
+
+      const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+      if (headingMatch) {
+        flushParagraph();
+        flushList();
+        flushQuote();
+        const level = headingMatch[1].length;
+        html += `<h${level}>${renderInlineMarkdown(headingMatch[2].trim())}</h${level}>`;
+        continue;
+      }
+
+      const quoteMatch = line.match(/^>\s?(.*)$/);
+      if (quoteMatch) {
+        flushParagraph();
+        flushList();
+        quoteLines.push(quoteMatch[1]);
+        continue;
+      }
+      flushQuote();
+
+      const unorderedMatch = line.match(/^[-*+]\s+(.+)$/);
+      if (unorderedMatch) {
+        flushParagraph();
+        if (listType && listType !== "ul") {
+          flushList();
+        }
+        listType = "ul";
+        listItems.push(unorderedMatch[1].trim());
+        continue;
+      }
+
+      const orderedMatch = line.match(/^\d+\.\s+(.+)$/);
+      if (orderedMatch) {
+        flushParagraph();
+        if (listType && listType !== "ol") {
+          flushList();
+        }
+        listType = "ol";
+        listItems.push(orderedMatch[1].trim());
+        continue;
+      }
+
+      if (/^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())) {
+        flushParagraph();
+        flushList();
+        flushQuote();
+        html += "<hr />";
+        continue;
+      }
+
+      flushList();
+      paragraphLines.push(line.trim());
+    }
+
+    flushParagraph();
+    flushList();
+    flushQuote();
+    flushCode();
+
+    return html;
+  }
+
+  function sanitizeMarkdownSource(value) {
+    const lines = String(value || "").split(/\r?\n/);
+    let inCodeFence = false;
+
+    return lines.map(line => {
+      if (/^```/.test(line.trim())) {
+        inCodeFence = !inCodeFence;
+        return line;
+      }
+
+      if (inCodeFence) {
+        return line;
+      }
+
+      return line.replace(/<\/?[a-z][^>]*>/gi, "");
+    }).join("\n");
+  }
+
+  function renderInlineMarkdown(value) {
+    const codeTokens = [];
+    let output = escapeHtml(value || "");
+
+    output = output.replace(/`([^`]+)`/g, (_, code) => {
+      const token = `%%CODE${codeTokens.length}%%`;
+      codeTokens.push(`<code>${code}</code>`);
+      return token;
+    });
+
+    output = output.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
+      const safeUrl = sanitizeMarkdownUrl(url);
+      if (!safeUrl) {
+        return alt ? escapeHtml(alt) : "";
+      }
+
+      return `<img src="${escapeAttribute(safeUrl)}" alt="${escapeAttribute(alt)}" loading="lazy" />`;
+    });
+
+    output = output.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+      const safeUrl = sanitizeMarkdownUrl(url);
+      if (!safeUrl) {
+        return label;
+      }
+
+      return `<a href="${escapeAttribute(safeUrl)}" target="_blank" rel="noreferrer noopener">${label}</a>`;
+    });
+
+    output = output.replace(/\b(https?:\/\/[^\s<]+[^<.,;:"')\]\s])/g, match => {
+      const safeUrl = sanitizeMarkdownUrl(match);
+      if (!safeUrl) {
+        return match;
+      }
+
+      return `<a href="${escapeAttribute(safeUrl)}" target="_blank" rel="noreferrer noopener">${match}</a>`;
+    });
+
+    output = output.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    output = output.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+    output = output.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+    output = output.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    output = output.replace(/_([^_]+)_/g, "<em>$1</em>");
+
+    codeTokens.forEach((token, index) => {
+      output = output.replace(`%%CODE${index}%%`, token);
+    });
+
+    return output;
+  }
+
+  function sanitizeMarkdownUrl(url) {
+    try {
+      const parsed = new URL(String(url || "").trim(), window.location.origin);
+      if (["http:", "https:", "mailto:"].includes(parsed.protocol)) {
+        return parsed.href;
+      }
+    } catch {
+    }
+
+    return null;
+  }
+
 async function openSettings() {
   try {
     const settings = await fetchJson("/api/settings");
@@ -1118,6 +1867,7 @@ async function openSettings() {
     elements.settingsMcpPath.value = settings.mcpConfigPath || "";
     elements.settingsStatus.hidden = true;
     elements.settingsStatus.textContent = "";
+    elements.modelScreen.hidden = true;
     elements.settingsScreen.hidden = false;
   } catch (error) {
     setStatus("Unable to load settings.", "error");

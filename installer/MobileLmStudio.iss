@@ -182,7 +182,7 @@ begin
   PortEdit.Width := ScaleX(96);
   PortEdit.Text := '5080';
 
-  TopPosition := PortEdit.Top + PortEdit.Height + ScaleY(12);
+  TopPosition := PortEdit.Top + PortEdit.Height + ScaleY(8);
 
   DataPathLabel := TNewStaticText.Create(ConfigurationPage);
   DataPathLabel.Parent := ConfigurationPage.Surface;
@@ -197,7 +197,7 @@ begin
   DataPathEdit.Width := ConfigurationPage.SurfaceWidth;
   DataPathEdit.Text := ExpandConstant('{commonappdata}\MobileLmStudio\mobile-lm-studio.db');
 
-  TopPosition := DataPathEdit.Top + DataPathEdit.Height + ScaleY(12);
+  TopPosition := DataPathEdit.Top + DataPathEdit.Height + ScaleY(8);
 
   LmStudioUrlLabel := TNewStaticText.Create(ConfigurationPage);
   LmStudioUrlLabel.Parent := ConfigurationPage.Surface;
@@ -212,7 +212,7 @@ begin
   LmStudioUrlEdit.Width := ConfigurationPage.SurfaceWidth;
   LmStudioUrlEdit.Text := 'http://127.0.0.1:1234';
 
-  TopPosition := LmStudioUrlEdit.Top + LmStudioUrlEdit.Height + ScaleY(12);
+  TopPosition := LmStudioUrlEdit.Top + LmStudioUrlEdit.Height + ScaleY(8);
 
   ApiKeyLabel := TNewStaticText.Create(ConfigurationPage);
   ApiKeyLabel.Parent := ConfigurationPage.Surface;
@@ -227,7 +227,7 @@ begin
   ApiKeyEdit.Width := ConfigurationPage.SurfaceWidth;
   ApiKeyEdit.PasswordChar := '*';
 
-  TopPosition := ApiKeyEdit.Top + ApiKeyEdit.Height + ScaleY(12);
+  TopPosition := ApiKeyEdit.Top + ApiKeyEdit.Height + ScaleY(8);
 
   McpConfigPathLabel := TNewStaticText.Create(ConfigurationPage);
   McpConfigPathLabel.Parent := ConfigurationPage.Surface;
@@ -241,7 +241,7 @@ begin
   McpConfigPathEdit.Top := McpConfigPathLabel.Top + McpConfigPathLabel.Height + ScaleY(4);
   McpConfigPathEdit.Width := ConfigurationPage.SurfaceWidth;
 
-  TopPosition := McpConfigPathEdit.Top + McpConfigPathEdit.Height + ScaleY(14);
+  TopPosition := McpConfigPathEdit.Top + McpConfigPathEdit.Height + ScaleY(8);
 
   EnablePinCheckBox := TNewCheckBox.Create(ConfigurationPage);
   EnablePinCheckBox.Parent := ConfigurationPage.Surface;
@@ -251,7 +251,7 @@ begin
   EnablePinCheckBox.Caption := 'Require sign-in with a PIN';
   EnablePinCheckBox.OnClick := @UpdatePinState;
 
-  TopPosition := EnablePinCheckBox.Top + EnablePinCheckBox.Height + ScaleY(8);
+  TopPosition := EnablePinCheckBox.Top + EnablePinCheckBox.Height + ScaleY(4);
 
   PinLabel := TNewStaticText.Create(ConfigurationPage);
   PinLabel.Parent := ConfigurationPage.Surface;
@@ -262,7 +262,7 @@ begin
   PinEdit := TNewEdit.Create(ConfigurationPage);
   PinEdit.Parent := ConfigurationPage.Surface;
   PinEdit.Left := 0;
-  PinEdit.Top := PinLabel.Top + PinLabel.Height + ScaleY(4);
+  PinEdit.Top := PinLabel.Top + PinLabel.Height + ScaleY(2);
   PinEdit.Width := ScaleX(140);
   PinEdit.PasswordChar := '*';
 

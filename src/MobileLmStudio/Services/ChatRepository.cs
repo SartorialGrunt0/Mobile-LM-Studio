@@ -56,12 +56,16 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_markdown TEXT NULL,
     tool_calls_json TEXT NOT NULL,
     invalid_tool_calls_json TEXT NOT NULL,
+    attachments_json TEXT NOT NULL DEFAULT '[]',
     stats_json TEXT NULL,
     response_id TEXT NULL,
+    model_key TEXT NULL,
     created_utc TEXT NOT NULL,
     FOREIGN KEY(chat_id) REFERENCES chats(id) ON DELETE CASCADE
 );", cancellationToken);
 
+        await EnsureColumnAsync(connection, "messages", "attachments_json", "TEXT NOT NULL DEFAULT '[]'", cancellationToken);
+        await EnsureColumnAsync(connection, "messages", "model_key", "TEXT NULL", cancellationToken);
         await ExecuteAsync(connection, "CREATE INDEX IF NOT EXISTS idx_messages_chat_created ON messages(chat_id, created_utc);", cancellationToken);
     }
 
@@ -179,6 +183,103 @@ LIMIT 1;";
             ParseDateTimeOffset(reader.GetString(9)));
     }
 
+    public async Task<bool> DeleteChatAsync(string chatId, CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await ExecuteAsync(connection, "PRAGMA foreign_keys = ON;", cancellationToken);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM chats WHERE id = @chatId;";
+        command.Parameters.AddWithValue("@chatId", chatId);
+        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    public async Task<RetryPromptContext?> GetRetryContextAsync(string chatId, CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        const string chatSql = @"
+SELECT id, title, model_key, system_prompt, reasoning, context_length, selected_mcp_json, last_response_id, created_utc, updated_utc
+FROM chats
+WHERE id = @chatId
+LIMIT 1;";
+
+        await using var chatCommand = connection.CreateCommand();
+        chatCommand.CommandText = chatSql;
+        chatCommand.Parameters.AddWithValue("@chatId", chatId);
+
+        await using var chatReader = await chatCommand.ExecuteReaderAsync(cancellationToken);
+        if (!await chatReader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        var chat = new StoredChatRecord(
+            chatReader.GetString(0),
+            chatReader.GetString(1),
+            chatReader.GetString(2),
+            chatReader.IsDBNull(3) ? null : chatReader.GetString(3),
+            chatReader.IsDBNull(4) ? null : chatReader.GetString(4),
+            chatReader.IsDBNull(5) ? null : chatReader.GetInt32(5),
+            DeserializeStringList(chatReader.GetString(6)),
+            chatReader.IsDBNull(7) ? null : chatReader.GetString(7),
+            ParseDateTimeOffset(chatReader.GetString(8)),
+            ParseDateTimeOffset(chatReader.GetString(9)));
+
+        const string messageSql = @"
+SELECT role, content_markdown, attachments_json, response_id
+FROM messages
+WHERE chat_id = @chatId
+ORDER BY created_utc ASC;";
+
+        await using var messageCommand = connection.CreateCommand();
+        messageCommand.CommandText = messageSql;
+        messageCommand.Parameters.AddWithValue("@chatId", chatId);
+
+        string? latestUserContent = null;
+        IReadOnlyList<ChatAttachmentDto> latestUserAttachments = [];
+        string? previousResponseId = null;
+        string? latestAssistantResponseId = null;
+
+        await using var messageReader = await messageCommand.ExecuteReaderAsync(cancellationToken);
+        while (await messageReader.ReadAsync(cancellationToken))
+        {
+            var role = messageReader.GetString(0);
+            if (string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase))
+            {
+                latestAssistantResponseId = messageReader.IsDBNull(3) ? null : messageReader.GetString(3);
+                continue;
+            }
+
+            if (!string.Equals(role, "user", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            latestUserContent = messageReader.GetString(1);
+            latestUserAttachments = DeserializeList<ChatAttachmentDto>(messageReader.GetString(2));
+            previousResponseId = latestAssistantResponseId;
+        }
+
+        if (string.IsNullOrWhiteSpace(latestUserContent))
+        {
+            return null;
+        }
+
+        return new RetryPromptContext(
+            chat.Id,
+            chat.ModelKey,
+            latestUserContent,
+            chat.SystemPrompt,
+            chat.Reasoning,
+            chat.ContextLength,
+            chat.SelectedMcpServerIds,
+            latestUserAttachments,
+            previousResponseId);
+    }
+
     public async Task<StoredChatRecord> CreateChatAsync(ChatStreamRequest request, CancellationToken cancellationToken)
     {
         var chatId = $"chat_{Guid.NewGuid():N}";
@@ -243,11 +344,13 @@ WHERE id = @chat_id;";
         {
             insertMessage.Transaction = transaction;
             insertMessage.CommandText = @"
-INSERT INTO messages (id, chat_id, role, content_markdown, reasoning_markdown, tool_calls_json, invalid_tool_calls_json, stats_json, response_id, created_utc)
-VALUES (@id, @chat_id, 'user', @content_markdown, NULL, '[]', '[]', NULL, NULL, @created_utc);";
+INSERT INTO messages (id, chat_id, role, content_markdown, reasoning_markdown, tool_calls_json, invalid_tool_calls_json, attachments_json, stats_json, response_id, model_key, created_utc)
+VALUES (@id, @chat_id, 'user', @content_markdown, NULL, '[]', '[]', @attachments_json, NULL, NULL, @model_key, @created_utc);";
             insertMessage.Parameters.AddWithValue("@id", $"msg_{Guid.NewGuid():N}");
             insertMessage.Parameters.AddWithValue("@chat_id", chatId);
             insertMessage.Parameters.AddWithValue("@content_markdown", request.Input);
+            insertMessage.Parameters.AddWithValue("@attachments_json", JsonSerializer.Serialize(request.Attachments ?? [], JsonOptions));
+            insertMessage.Parameters.AddWithValue("@model_key", DbValue(request.Model));
             insertMessage.Parameters.AddWithValue("@created_utc", now.ToString("O"));
             await insertMessage.ExecuteNonQueryAsync(cancellationToken);
         }
@@ -291,8 +394,8 @@ WHERE id = @chat_id;";
         {
             insertMessage.Transaction = transaction;
             insertMessage.CommandText = @"
-INSERT INTO messages (id, chat_id, role, content_markdown, reasoning_markdown, tool_calls_json, invalid_tool_calls_json, stats_json, response_id, created_utc)
-VALUES (@id, @chat_id, 'assistant', @content_markdown, @reasoning_markdown, @tool_calls_json, @invalid_tool_calls_json, @stats_json, @response_id, @created_utc);";
+INSERT INTO messages (id, chat_id, role, content_markdown, reasoning_markdown, tool_calls_json, invalid_tool_calls_json, attachments_json, stats_json, response_id, model_key, created_utc)
+VALUES (@id, @chat_id, 'assistant', @content_markdown, @reasoning_markdown, @tool_calls_json, @invalid_tool_calls_json, '[]', @stats_json, @response_id, @model_key, @created_utc);";
             insertMessage.Parameters.AddWithValue("@id", $"msg_{Guid.NewGuid():N}");
             insertMessage.Parameters.AddWithValue("@chat_id", chatId);
             insertMessage.Parameters.AddWithValue("@content_markdown", assistant.Content);
@@ -301,6 +404,7 @@ VALUES (@id, @chat_id, 'assistant', @content_markdown, @reasoning_markdown, @too
             insertMessage.Parameters.AddWithValue("@invalid_tool_calls_json", JsonSerializer.Serialize(assistant.InvalidToolCalls, JsonOptions));
             insertMessage.Parameters.AddWithValue("@stats_json", assistant.Stats is null ? DBNull.Value : JsonSerializer.Serialize(assistant.Stats, JsonOptions));
             insertMessage.Parameters.AddWithValue("@response_id", DbValue(assistant.ResponseId));
+            insertMessage.Parameters.AddWithValue("@model_key", DbValue(assistant.ModelKey));
             insertMessage.Parameters.AddWithValue("@created_utc", now.ToString("O"));
             await insertMessage.ExecuteNonQueryAsync(cancellationToken);
         }
@@ -311,7 +415,7 @@ VALUES (@id, @chat_id, 'assistant', @content_markdown, @reasoning_markdown, @too
     private async Task<IReadOnlyList<ChatMessageDto>> GetMessagesAsync(SqliteConnection connection, string chatId, CancellationToken cancellationToken)
     {
         const string sql = @"
-SELECT id, role, content_markdown, reasoning_markdown, tool_calls_json, invalid_tool_calls_json, stats_json, created_utc
+SELECT id, role, content_markdown, reasoning_markdown, tool_calls_json, invalid_tool_calls_json, attachments_json, model_key, stats_json, created_utc
 FROM messages
 WHERE chat_id = @chatId
 ORDER BY created_utc ASC;";
@@ -331,11 +435,40 @@ ORDER BY created_utc ASC;";
                 reader.IsDBNull(3) ? null : reader.GetString(3),
                 DeserializeList<ToolCallDto>(reader.GetString(4)),
                 DeserializeList<InvalidToolCallDto>(reader.GetString(5)),
-                reader.IsDBNull(6) ? null : JsonSerializer.Deserialize<ChatStatsDto>(reader.GetString(6), JsonOptions),
-                ParseDateTimeOffset(reader.GetString(7))));
+                DeserializeList<ChatAttachmentDto>(reader.GetString(6)),
+                reader.IsDBNull(7) ? null : reader.GetString(7),
+                reader.IsDBNull(8) ? null : JsonSerializer.Deserialize<ChatStatsDto>(reader.GetString(8), JsonOptions),
+                ParseDateTimeOffset(reader.GetString(9))));
         }
 
         return messages;
+    }
+
+    private static async Task EnsureColumnAsync(SqliteConnection connection, string tableName, string columnName, string columnDefinition, CancellationToken cancellationToken)
+    {
+        if (await HasColumnAsync(connection, tableName, columnName, cancellationToken))
+        {
+            return;
+        }
+
+        await ExecuteAsync(connection, $"ALTER TABLE {tableName} ADD COLUMN {columnName} {columnDefinition};", cancellationToken);
+    }
+
+    private static async Task<bool> HasColumnAsync(SqliteConnection connection, string tableName, string columnName, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info({tableName});";
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (string.Equals(reader.GetString(1), columnName, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static async Task ExecuteAsync(SqliteConnection connection, string sql, CancellationToken cancellationToken)
