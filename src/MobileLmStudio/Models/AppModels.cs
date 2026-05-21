@@ -369,3 +369,5 @@ internal sealed record SettingsUpdateRequest(
     string McpConfigPath,
     bool RequireLogin,
     string? Pin);
+
+internal sealed record AutoTitleRequest(string Input);

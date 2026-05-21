@@ -84,6 +84,23 @@ select {
 
 button {
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+input:not([type="checkbox"]):not([type="file"]),
+textarea {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+select {
+  -webkit-appearance: none;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%235a6470' stroke-width='1.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  padding-right: 2.25rem;
 }
 
 [hidden] {
@@ -132,7 +149,7 @@ body.drawer-open .drawer-backdrop {
 }
 
 .workspace-shell {
-  min-height: 100vh;
+  height: 100dvh;
   display: grid;
   grid-template-rows: auto auto auto 1fr auto;
   gap: 0.65rem;
@@ -196,15 +213,15 @@ body.drawer-open .drawer-backdrop {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 50px;
+  height: 50px;
   padding: 0;
   flex: 0 0 auto;
 }
 
 .icon-button svg {
-  width: 18px;
-  height: 18px;
+  width: 22px;
+  height: 22px;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
@@ -213,8 +230,8 @@ body.drawer-open .drawer-backdrop {
 }
 
 .compact-icon-button {
-  width: 36px;
-  height: 36px;
+  width: 45px;
+  height: 45px;
 }
 
 .top-title,
@@ -512,6 +529,7 @@ body.drawer-open .drawer-backdrop {
 .message-scroll {
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0.1rem 0 0.5rem;
 }
 
@@ -748,6 +766,12 @@ body.drawer-open .drawer-backdrop {
   background: linear-gradient(90deg, var(--accent) 0%, var(--warm) 100%);
 }
 
+.composer-context-meter {
+  margin-top: 0;
+  margin-bottom: 0.2rem;
+  padding: 0 0.1rem;
+}
+
 .stats-row {
   margin-top: 0.7rem;
   display: flex;
@@ -774,8 +798,8 @@ body.drawer-open .drawer-backdrop {
 }
 
 .message-action-icon {
-  width: 36px;
-  height: 36px;
+  width: 45px;
+  height: 45px;
 }
 
 .empty-state {
@@ -815,8 +839,8 @@ body.drawer-open .drawer-backdrop {
 }
 
 .attach-button {
-  width: 40px;
-  height: 40px;
+  width: 50px;
+  height: 50px;
   padding: 0;
   border-radius: 12px;
 }
@@ -847,6 +871,7 @@ body.drawer-open .drawer-backdrop {
   flex-direction: column;
   gap: 0.6rem;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding-bottom: 1rem;
 }
 
@@ -881,13 +906,23 @@ body.drawer-open .drawer-backdrop {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 45px;
+  height: 45px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: transparent;
   color: var(--muted);
   padding: 0;
+}
+
+.chat-delete svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
 }
 
 .chat-title {
@@ -1169,5 +1204,17 @@ body.drawer-open .drawer-backdrop {
   .control-grid {
     grid-template-columns: minmax(0, 1.8fr) minmax(180px, 220px) 140px 130px 160px;
     align-items: end;
+  }
+}
+
+/* Prevent iOS Safari auto-zoom on input focus.
+   iOS zooms into any input with font-size < 16px.
+   This targets touch-primary devices (phones, tablets) only
+   and does not affect desktop rendering. */
+@media (hover: none) and (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
   }
 }

@@ -2,9 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#f4efe4" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#10161d" media="(prefers-color-scheme: dark)" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="LM Studio" />
   <title>Mobile LM Studio</title>
-  <link rel="stylesheet" href="app.css?v=20260520" />
+  <link rel="stylesheet" href="app.css?v=20260521" />
 </head>
 <body>
   <div class="page-shell">
@@ -35,7 +40,7 @@
           <span id="connection-pill" class="connection-pill">Offline</span>
           <div class="top-bar-actions">
             <button id="model-button" class="ghost-button icon-button" type="button" title="Model controls" aria-label="Model controls"></button>
-            <button id="export-chat-button" class="secondary-button icon-button" type="button" title="Export chat" aria-label="Export chat"></button>
+            <button id="export-chat-button" class="ghost-button icon-button" type="button" title="Export chat" aria-label="Export chat"></button>
             <button id="delete-chat-button" class="ghost-button icon-button" type="button" title="Delete chat" aria-label="Delete chat"></button>
             <button id="theme-button" class="ghost-button icon-button" type="button" title="Toggle dark mode" aria-label="Toggle dark mode"></button>
             <button id="settings-button" class="ghost-button icon-button" type="button" title="Settings" aria-label="Settings"></button>
@@ -62,14 +67,13 @@
       <form id="composer-form" class="composer">
         <div class="composer-main">
           <div class="composer-toolbar">
-            <button id="attach-image-button" class="ghost-button attach-button icon-button" type="button" title="Add image" aria-label="Add image"></button>
-            <button id="attach-file-button" class="ghost-button attach-button icon-button" type="button" title="Add file" aria-label="Add file"></button>
-            <input id="image-input" type="file" accept="image/*" multiple hidden />
+            <button id="attach-button" class="ghost-button attach-button icon-button" type="button" title="Add attachment" aria-label="Add attachment"></button>
             <input id="file-input" type="file" multiple hidden />
           </div>
           <div id="composer-attachments" class="composer-attachments" hidden></div>
+          <div id="composer-context-meter" class="context-meter composer-context-meter" hidden></div>
           <div class="composer-field">
-            <textarea id="message-input" rows="1" placeholder="Send a message" aria-label="Message"></textarea>
+            <textarea id="message-input" rows="1" placeholder="Send a message" aria-label="Message" autocorrect="off" autocapitalize="sentences" spellcheck="false"></textarea>
           </div>
         </div>
         <button id="send-button" class="primary-button send-button" type="submit">Send</button>
@@ -169,7 +173,7 @@
           <summary>Prompt and Tools</summary>
           <label class="field wide-field">
             <span>System Prompt</span>
-            <textarea id="system-prompt-input" rows="3" placeholder="Optional system prompt"></textarea>
+            <textarea id="system-prompt-input" rows="3" placeholder="Optional system prompt" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
           </label>
 
           <div class="mcp-section">
@@ -193,6 +197,6 @@
     </div>
   </section>
 
-  <script src="app.js?v=20260520" type="module"></script>
+  <script src="app.js?v=20260521" type="module"></script>
 </body>
 </html>

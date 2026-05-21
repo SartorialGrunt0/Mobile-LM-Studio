@@ -257,6 +257,8 @@ begin
   PinLabel.Parent := ConfigurationPage.Surface;
   PinLabel.Left := 0;
   PinLabel.Top := TopPosition;
+  PinLabel.AutoSize := False;
+  PinLabel.Width := ConfigurationPage.SurfaceWidth;
   PinLabel.Caption := 'Sign-in PIN';
 
   PinEdit := TNewEdit.Create(ConfigurationPage);

@@ -58,9 +58,8 @@ const elements = {
   messageList: document.getElementById("message-list"),
   composerForm: document.getElementById("composer-form"),
   composerAttachments: document.getElementById("composer-attachments"),
-  attachImageButton: document.getElementById("attach-image-button"),
-  attachFileButton: document.getElementById("attach-file-button"),
-  imageInput: document.getElementById("image-input"),
+  composerContextMeter: document.getElementById("composer-context-meter"),
+  attachButton: document.getElementById("attach-button"),
   fileInput: document.getElementById("file-input"),
   messageInput: document.getElementById("message-input"),
   sendButton: document.getElementById("send-button"),
@@ -128,6 +127,7 @@ function bindEvents() {
     startNewDraft();
     render();
     syncMessageScroll(true);
+    autoResizeComposer();
     setDrawerOpen(false);
   });
   elements.configBannerDismiss?.addEventListener("click", () => dismissConfigBanner());
@@ -231,12 +231,7 @@ function bindEvents() {
     void sendMessage();
   });
 
-  elements.attachImageButton.addEventListener("click", () => elements.imageInput.click());
-  elements.attachFileButton.addEventListener("click", () => elements.fileInput.click());
-  elements.imageInput.addEventListener("change", event => {
-    void addComposerAttachments(event.target.files, "image");
-    event.target.value = "";
-  });
+  elements.attachButton.addEventListener("click", () => elements.fileInput.click());
   elements.fileInput.addEventListener("change", event => {
     void addComposerAttachments(event.target.files, "file");
     event.target.value = "";
@@ -435,7 +430,8 @@ async function openChat(chatId, suppressStatus = false) {
   try {
     state.currentChat = await fetchJson(`/api/chats/${encodeURIComponent(chatId)}`);
     state.currentChatId = state.currentChat.id;
-    state.selectedModel = state.currentChat.modelKey || state.selectedModel;
+    const loadedModel = state.models.find(model => (model.loadedInstances || []).length > 0);
+    state.selectedModel = loadedModel?.key || state.currentChat.modelKey || state.selectedModel;
     state.systemPrompt = state.currentChat.systemPrompt || "";
     state.selectedReasoning = state.currentChat.reasoning || "default";
     state.selectedContextLength = state.currentChat.contextLength ? String(state.currentChat.contextLength) : String(suggestContextLength(findSelectedModel()));
@@ -445,6 +441,7 @@ async function openChat(chatId, suppressStatus = false) {
     normalizeReasoningSelection();
     render();
     syncMessageScroll(true);
+    autoResizeComposer();
     setDrawerOpen(false);
 
     if (!suppressStatus) {
@@ -662,11 +659,18 @@ async function sendMessage() {
       state.currentChat.id = newChatId;
     }
 
+    const wasNewChat = requestBody.chatId === null;
+    const chatIdForTitle = state.currentChatId;
+
     await consumeEventStream(response.body, event => applyStreamEvent(event, pendingAssistant));
     await Promise.all([refreshChats(), refreshModels()]);
 
     if (state.currentChatId) {
       await openChat(state.currentChatId, true);
+    }
+
+    if (wasNewChat && chatIdForTitle) {
+      void autoTitleChat(chatIdForTitle, input);
     }
 
     setStatus("Response complete.", "neutral");
@@ -891,8 +895,7 @@ function renderControls() {
   const locked = !state.bootstrap?.authenticated && state.bootstrap?.requireLogin;
   elements.sendButton.disabled = state.isSending || locked || !state.selectedModel;
   elements.messageInput.disabled = state.isSending || locked;
-  elements.attachImageButton.disabled = state.isSending || locked;
-  elements.attachFileButton.disabled = state.isSending || locked;
+  elements.attachButton.disabled = state.isSending || locked;
   elements.themeButton.setAttribute("aria-pressed", state.theme === "dark" ? "true" : "false");
   renderThemeButton();
 }
@@ -935,6 +938,11 @@ function renderReasoningOptions() {
   elements.reasoningSelect.innerHTML = options
     .map(option => `<option value="${escapeAttribute(option.value)}" ${option.value === state.selectedReasoning ? "selected" : ""}>${escapeHtml(option.label)}</option>`)
     .join("");
+
+  const reasoningField = elements.reasoningSelect.closest("label.field");
+  if (reasoningField) {
+    reasoningField.hidden = allowedOptions.length === 0;
+  }
 }
 
 function renderModelDetails() {
@@ -1023,6 +1031,14 @@ function renderMessages(forceScroll = false) {
   elements.emptyState.hidden = hasMessages;
   elements.messageList.innerHTML = hasMessages ? messages.map(renderMessageCard).join("") : "";
   syncMessageScroll(forceScroll || state.isSending);
+
+  // Update context meter in composer (bug #1)
+  if (elements.composerContextMeter) {
+    const latestWithStats = [...messages].reverse().find(m => m.role === "assistant" && m.stats);
+    const meterHtml = renderContextMeter(latestWithStats || null);
+    elements.composerContextMeter.hidden = !meterHtml;
+    elements.composerContextMeter.innerHTML = meterHtml;
+  }
 }
 
 function renderStatus() {
@@ -1081,7 +1097,7 @@ function renderMessageCard(message) {
       </div>`
     : "";
 
-  const contextBlock = renderContextMeter(message);
+  const contextBlock = "";
   const canExport = Boolean(state.currentChatId) && !message.pending;
   const canRetry = Boolean(state.currentChatId) && !message.pending && message.role === "assistant" && isLatestAssistantMessage(message);
   const actionsBlock = canExport || canRetry
@@ -1305,6 +1321,25 @@ function parseOptionalFloat(value) {
 function summarizeTitle(input) {
   const trimmed = input.replace(/\s+/g, " ").trim();
   return trimmed.length <= 60 ? trimmed : `${trimmed.slice(0, 57)}...`;
+}
+
+async function autoTitleChat(chatId, input) {
+  try {
+    const result = await fetchJson(`/api/chats/${encodeURIComponent(chatId)}/auto-title`, {
+      method: "POST",
+      body: JSON.stringify({ input }),
+    });
+    if (result?.title) {
+      if (state.currentChat?.id === chatId) {
+        state.currentChat.title = result.title;
+        renderChatToolbar();
+      }
+      state.chats = await fetchJson("/api/chats");
+      renderChatList();
+    }
+  } catch {
+    // Non-critical — silently ignore
+  }
 }
 
 function formatClock(value) {
@@ -2191,8 +2226,7 @@ function renderActionIcons() {
   setButtonIcon(elements.deleteChatButton, "trash");
   setButtonIcon(elements.settingsButton, "gear");
   setButtonIcon(elements.logoutButton, "lock");
-  setButtonIcon(elements.attachImageButton, "image");
-  setButtonIcon(elements.attachFileButton, "file");
+  setButtonIcon(elements.attachButton, "paperclip");
   setButtonIcon(elements.configBannerDismiss, "close");
   renderThemeButton();
 }
@@ -2236,6 +2270,8 @@ function renderIcon(iconName) {
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2.5"></path><path d="M12 19.5V22"></path><path d="m4.9 4.9 1.8 1.8"></path><path d="m17.3 17.3 1.8 1.8"></path><path d="M2 12h2.5"></path><path d="M19.5 12H22"></path><path d="m4.9 19.1 1.8-1.8"></path><path d="m17.3 6.7 1.8-1.8"></path></svg>';
     case "moon":
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"></path></svg>';
+    case "paperclip":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>';
     default:
       return "";
   }

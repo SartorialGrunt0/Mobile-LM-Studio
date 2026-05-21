@@ -184,7 +184,7 @@ api.MapGet("/settings", (LmStudioConnectionService connectionService, PinSecurit
     return Results.Ok(connectionService.GetSettings(pinSecurity.IsConfigured));
 });
 
-api.MapPost("/settings", async Task<IResult> (SettingsUpdateRequest request, HttpContext context, LmStudioConnectionService connectionService, LmStudioSettingsStore settingsStore, PinSecurityService pinSecurity, ILogger<Program> logger) =>
+api.MapPost("/settings", (SettingsUpdateRequest request, LmStudioConnectionService connectionService, PinSecurityService pinSecurity, LmStudioSettingsStore settingsStore, ILogger<Program> logger) =>
 {
     var normalizedSettings = NormalizeSettings(request);
     var validationErrors = ValidateSettings(normalizedSettings);
@@ -193,48 +193,30 @@ api.MapPost("/settings", async Task<IResult> (SettingsUpdateRequest request, Htt
         return Results.ValidationProblem(validationErrors);
     }
 
-    SecurityOptions securitySettings;
+    SecurityOptions security;
     try
     {
-        securitySettings = pinSecurity.BuildUpdatedSecurity(request.RequireLogin, request.Pin);
+        security = pinSecurity.BuildUpdatedSecurity(request.RequireLogin, request.Pin);
     }
-    catch (ArgumentException exception)
+    catch (ArgumentException argEx)
     {
-        return Results.ValidationProblem(new Dictionary<string, string[]>
-        {
-            ["pin"] = [exception.Message],
-        });
+        return Results.ValidationProblem(new Dictionary<string, string[]> { ["pin"] = [argEx.Message] });
     }
 
     try
     {
-        settingsStore.Save(normalizedSettings, securitySettings);
+        settingsStore.Save(normalizedSettings, security);
         connectionService.UpdateSettings(normalizedSettings.BaseUrl, normalizedSettings.ApiToken, normalizedSettings.McpConfigPath);
-        pinSecurity.UpdateSecurity(securitySettings);
-
-        if (!string.IsNullOrWhiteSpace(securitySettings.PinHash))
-        {
-            if (context.User.Identity?.IsAuthenticated != true)
-            {
-                var claims = new[] { new Claim(ClaimTypes.Name, "mobile-user") };
-                var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme));
-                await context.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, principal);
-            }
-        }
-        else if (context.User.Identity?.IsAuthenticated == true)
-        {
-            await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
-        }
+        pinSecurity.UpdateSecurity(security);
 
         logger.LogInformation(
-            "LM Studio settings updated. BaseUrl={BaseUrl}; McpConfigPath={McpConfigPath}; ApiTokenConfigured={HasApiToken}; RequireLogin={RequireLogin}; RuntimeSettingsPath={RuntimeSettingsPath}",
+            "LM Studio settings updated. BaseUrl={BaseUrl}; McpConfigPath={McpConfigPath}; ApiTokenConfigured={HasApiToken}; RuntimeSettingsPath={RuntimeSettingsPath}",
             normalizedSettings.BaseUrl,
             normalizedSettings.McpConfigPath,
             !string.IsNullOrWhiteSpace(normalizedSettings.ApiToken),
-            !string.IsNullOrWhiteSpace(securitySettings.PinHash),
             settingsStore.SettingsPath);
 
-        return Results.Ok(connectionService.GetSettings(!string.IsNullOrWhiteSpace(securitySettings.PinHash)));
+        return Results.Ok(connectionService.GetSettings(pinSecurity.IsConfigured));
     }
     catch (Exception exception)
     {
@@ -306,111 +288,151 @@ api.MapGet("/chats/{chatId}", async Task<IResult> (string chatId, ChatRepository
 
 api.MapDelete("/chats/{chatId}", async Task<IResult> (string chatId, ChatRepository repository, CancellationToken cancellationToken) =>
 {
-    return await repository.DeleteChatAsync(chatId, cancellationToken)
-        ? Results.NoContent()
-        : Results.NotFound();
+    var deleted = await repository.DeleteChatAsync(chatId, cancellationToken);
+    return deleted ? Results.NoContent() : Results.NotFound();
 });
 
-api.MapGet("/chats/{chatId}/export", async Task<IResult> (string chatId, ChatRepository repository, CancellationToken cancellationToken) =>
+api.MapPost("/chats/{chatId}/auto-title", async Task<IResult> (string chatId, AutoTitleRequest request, ChatRepository repository, LmStudioClient client, ILogger<Program> logger, CancellationToken cancellationToken) =>
 {
-    var chat = await repository.GetChatAsync(chatId, cancellationToken);
-    if (chat is null)
+    try
     {
-        return Results.NotFound();
-    }
+        var chat = await repository.GetChatRecordAsync(chatId, cancellationToken);
+        if (chat is null)
+        {
+            return Results.NotFound();
+        }
 
-    var markdown = BuildChatMarkdown(chat);
-    var fileName = $"{SanitizeFileName(chat.Title)}.md";
-    return Results.File(Encoding.UTF8.GetBytes(markdown), "text/markdown; charset=utf-8", fileName);
+        var title = await client.GenerateTitleAsync(chat.ModelKey, request.Input, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(title))
+        {
+            await repository.UpdateTitleAsync(chatId, title, cancellationToken);
+        }
+        return Results.Ok(new { title });
+    }
+    catch (Exception exception)
+    {
+        logger.LogWarning(exception, "Unable to auto-title chat {ChatId}.", chatId);
+        return Results.Ok(new { title = (string?)null });
+    }
 });
 
-api.MapGet("/chats/{chatId}/messages/{messageId}/export", async Task<IResult> (string chatId, string messageId, ChatRepository repository, CancellationToken cancellationToken) =>
+api.MapPost("/chats/{chatId}/retry/stream", async Task (string chatId, HttpContext context, ChatRepository repository, McpCatalogService catalog, LmStudioClient client, CancellationToken cancellationToken) =>
 {
-    var chat = await repository.GetChatAsync(chatId, cancellationToken);
-    if (chat is null)
-    {
-        return Results.NotFound();
-    }
-
-    var message = chat.Messages.FirstOrDefault(candidate => string.Equals(candidate.Id, messageId, StringComparison.Ordinal));
-    if (message is null)
-    {
-        return Results.NotFound();
-    }
-
-    var markdown = BuildMessageMarkdown(chat, message);
-    var fileName = $"{SanitizeFileName(chat.Title)}-{message.Role}-{message.Id}.md";
-    return Results.File(Encoding.UTF8.GetBytes(markdown), "text/markdown; charset=utf-8", fileName);
-});
-
-api.MapPost("/chats/{chatId}/retry/stream", async Task (HttpContext context, string chatId, ChatRepository repository, McpCatalogService catalog, LmStudioClient client) =>
-{
-    var processingToken = app.Lifetime.ApplicationStopping;
-    var retryContext = await repository.GetRetryContextAsync(chatId, processingToken);
+    var retryContext = await repository.GetRetryContextAsync(chatId, cancellationToken);
     if (retryContext is null)
     {
         context.Response.StatusCode = StatusCodes.Status404NotFound;
-        await context.Response.WriteAsJsonAsync(new { error = "There is no prompt available to retry in this chat." }, context.RequestAborted);
         return;
     }
 
-    var chat = await repository.GetChatRecordAsync(chatId, processingToken)
-        ?? throw new InvalidOperationException($"Chat '{chatId}' was not found.");
+    var availableServers = await catalog.GetServersAsync(cancellationToken);
+    var selectedServerIds = retryContext.McpServerIds
+        .Where(serverId => !string.IsNullOrWhiteSpace(serverId))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-    var retryRequest = new ChatStreamRequest(
-        retryContext.ChatId,
-        retryContext.Model,
-        retryContext.Input,
-        retryContext.SystemPrompt,
-        retryContext.Reasoning,
-        retryContext.ContextLength,
-        retryContext.Temperature,
-        retryContext.McpServerIds.ToArray(),
-        retryContext.Attachments.ToArray());
+    var integrations = availableServers
+        .Where(server => selectedServerIds.Contains(server.Id))
+        .Select(server => new LmStudioPluginIntegration { Id = $"mcp/{server.Id}" })
+        .ToArray();
 
-    await ExecuteChatStreamAsync(
-        context,
-        retryRequest,
-        chat,
-        repository,
-        catalog,
-        client,
-        retryContext.PreviousResponseId,
-        saveUserMessage: false,
-        processingToken);
+    context.Response.StatusCode = StatusCodes.Status200OK;
+    context.Response.ContentType = "text/event-stream";
+    context.Response.Headers.Append("Cache-Control", "no-cache");
+
+    using var lmResponse = await client.StartChatStreamAsync(new LmStudioChatRequest
+    {
+        Model = retryContext.Model,
+        Input = retryContext.Input,
+        SystemPrompt = retryContext.SystemPrompt,
+        Reasoning = retryContext.Reasoning,
+        ContextLength = retryContext.ContextLength,
+        Temperature = retryContext.Temperature,
+        PreviousResponseId = retryContext.PreviousResponseId,
+        Integrations = integrations.Length == 0 ? null : integrations,
+    }, cancellationToken);
+
+    if (!lmResponse.IsSuccessStatusCode)
+    {
+        var details = await client.ReadErrorAsync(lmResponse, cancellationToken);
+        await ChatStreamHelpers.WriteSseAsync(context.Response, "error", JsonSerializer.Serialize(new { message = details }), cancellationToken);
+        return;
+    }
+
+    await using var stream = await lmResponse.Content.ReadAsStreamAsync(cancellationToken);
+    var retryRequest = new ChatStreamRequest(chatId, retryContext.Model, retryContext.Input, retryContext.SystemPrompt, retryContext.Reasoning, retryContext.ContextLength, retryContext.Temperature, retryContext.McpServerIds.ToArray(), retryContext.Attachments.ToArray());
+    var finalResponse = await ChatStreamHelpers.RelayLmStudioStreamAsync(stream, context.Response, cancellationToken);
+    if (finalResponse is null) return;
+
+    var assistant = ChatStreamHelpers.BuildAssistantPersistence(finalResponse, retryContext.Model, retryContext.ContextLength);
+    await repository.SaveAssistantMessageAsync(chatId, retryRequest, assistant, cancellationToken);
 });
 
-api.MapPost("/chats/stream", async Task (HttpContext context, ChatStreamRequest request, ChatRepository repository, McpCatalogService catalog, LmStudioClient client) =>
+api.MapPost("/chats/stream", async Task (HttpContext context, ChatStreamRequest request, ChatRepository repository, McpCatalogService catalog, LmStudioClient client, CancellationToken cancellationToken) =>
 {
-    if (string.IsNullOrWhiteSpace(request.Model) || (string.IsNullOrWhiteSpace(request.Input) && (request.Attachments?.Length ?? 0) == 0))
+    if (string.IsNullOrWhiteSpace(request.Model) || string.IsNullOrWhiteSpace(request.Input))
     {
         context.Response.StatusCode = StatusCodes.Status400BadRequest;
-        await context.Response.WriteAsJsonAsync(new { error = "Model and either text or an attachment are required." }, context.RequestAborted);
+        await context.Response.WriteAsJsonAsync(new { error = "Model and input are required." }, cancellationToken);
         return;
     }
 
-    var processingToken = app.Lifetime.ApplicationStopping;
     StoredChatRecord chat;
     if (string.IsNullOrWhiteSpace(request.ChatId))
     {
-        chat = await repository.CreateChatAsync(request, processingToken);
+        chat = await repository.CreateChatAsync(request, cancellationToken);
     }
     else
     {
-        chat = await repository.GetChatRecordAsync(request.ChatId, processingToken)
+        chat = await repository.GetChatRecordAsync(request.ChatId, cancellationToken)
             ?? throw new InvalidOperationException($"Chat '{request.ChatId}' was not found.");
     }
 
-    await ExecuteChatStreamAsync(
-        context,
-        request,
-        chat,
-        repository,
-        catalog,
-        client,
-        chat.LastResponseId,
-        saveUserMessage: true,
-        processingToken);
+    await repository.SaveUserMessageAsync(chat.Id, request, cancellationToken);
+
+    var availableServers = await catalog.GetServersAsync(cancellationToken);
+    var selectedServerIds = (request.McpServerIds ?? [])
+        .Where(serverId => !string.IsNullOrWhiteSpace(serverId))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    var integrations = availableServers
+        .Where(server => selectedServerIds.Contains(server.Id))
+        .Select(server => new LmStudioPluginIntegration { Id = $"mcp/{server.Id}" })
+        .ToArray();
+
+    context.Response.StatusCode = StatusCodes.Status200OK;
+    context.Response.ContentType = "text/event-stream";
+    context.Response.Headers.Append("Cache-Control", "no-cache");
+    context.Response.Headers.Append("X-Chat-Id", chat.Id);
+
+    using var lmResponse = await client.StartChatStreamAsync(new LmStudioChatRequest
+    {
+        Model = request.Model,
+        Input = request.Input,
+        SystemPrompt = request.SystemPrompt,
+        Reasoning = request.Reasoning,
+        ContextLength = request.ContextLength,
+        PreviousResponseId = chat.LastResponseId,
+        Integrations = integrations.Length == 0 ? null : integrations,
+    }, cancellationToken);
+
+    if (!lmResponse.IsSuccessStatusCode)
+    {
+        var details = await client.ReadErrorAsync(lmResponse, cancellationToken);
+        await ChatStreamHelpers.WriteSseAsync(context.Response, "error", JsonSerializer.Serialize(new { message = details }), cancellationToken);
+        return;
+    }
+
+    await using var stream = await lmResponse.Content.ReadAsStreamAsync(cancellationToken);
+    var finalResponse = await ChatStreamHelpers.RelayLmStudioStreamAsync(stream, context.Response, cancellationToken);
+    if (finalResponse is null)
+    {
+        return;
+    }
+
+    var assistant = ChatStreamHelpers.BuildAssistantPersistence(finalResponse, request.Model, request.ContextLength);
+    await repository.SaveAssistantMessageAsync(chat.Id, request, assistant, cancellationToken);
 });
 
 app.MapFallbackToFile("index.html");
@@ -430,8 +452,8 @@ static SettingsResponse NormalizeSettings(SettingsUpdateRequest request)
     return new SettingsResponse(
         request.BaseUrl.Trim(),
         request.ApiToken.Trim(),
-    request.McpConfigPath.Trim(),
-    request.RequireLogin);
+        request.McpConfigPath.Trim(),
+        request.RequireLogin);
 }
 
 static Dictionary<string, string[]>? ValidateSettings(SettingsResponse settings)
@@ -474,347 +496,6 @@ static string[] ResolveHostOverrideUrls(IConfiguration configuration)
         .ToArray();
 }
 
-static async Task ExecuteChatStreamAsync(
-    HttpContext context,
-    ChatStreamRequest request,
-    StoredChatRecord chat,
-    ChatRepository repository,
-    McpCatalogService catalog,
-    LmStudioClient client,
-    string? previousResponseId,
-    bool saveUserMessage,
-    CancellationToken cancellationToken)
-{
-    if (saveUserMessage)
-    {
-        await repository.SaveUserMessageAsync(chat.Id, request, cancellationToken);
-    }
-
-    var availableServers = await catalog.GetServersAsync(cancellationToken);
-    var selectedServerIds = (request.McpServerIds ?? [])
-        .Where(serverId => !string.IsNullOrWhiteSpace(serverId))
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-    var integrations = availableServers
-        .Where(server => selectedServerIds.Contains(server.Id))
-        .Select(server => new LmStudioPluginIntegration { Id = $"mcp/{server.Id}" })
-        .ToArray();
-
-    context.Response.StatusCode = StatusCodes.Status200OK;
-    context.Response.ContentType = "text/event-stream";
-    context.Response.Headers.Append("Cache-Control", "no-cache");
-    context.Response.Headers.Append("X-Chat-Id", chat.Id);
-
-    using var lmResponse = await client.StartChatStreamAsync(new LmStudioChatRequest
-    {
-        Model = request.Model,
-        Input = BuildLmStudioInput(request),
-        SystemPrompt = request.SystemPrompt,
-        Reasoning = request.Reasoning,
-        ContextLength = request.ContextLength,
-        Temperature = request.Temperature,
-        PreviousResponseId = previousResponseId,
-        Integrations = integrations.Length == 0 ? null : integrations,
-    }, cancellationToken);
-
-    if (!lmResponse.IsSuccessStatusCode)
-    {
-        var details = await client.ReadErrorAsync(lmResponse, cancellationToken);
-        await ChatStreamHelpers.TryWriteSseAsync(context.Response, "error", JsonSerializer.Serialize(new { message = details }), cancellationToken);
-        return;
-    }
-
-    await using var stream = await lmResponse.Content.ReadAsStreamAsync(cancellationToken);
-    var finalResponse = await ChatStreamHelpers.RelayLmStudioStreamAsync(stream, context.Response, cancellationToken);
-    if (finalResponse is null)
-    {
-        return;
-    }
-
-    var assistant = ChatStreamHelpers.BuildAssistantPersistence(finalResponse, request);
-    await repository.SaveAssistantMessageAsync(chat.Id, request, assistant, cancellationToken);
-}
-
-static object BuildLmStudioInput(ChatStreamRequest request)
-{
-    var attachments = request.Attachments ?? [];
-    var imageAttachments = attachments
-        .Where(attachment => string.Equals(attachment.Kind, "image", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(attachment.DataUrl))
-        .ToArray();
-
-    var fileAttachments = attachments
-        .Where(attachment => !string.Equals(attachment.Kind, "image", StringComparison.OrdinalIgnoreCase))
-        .ToArray();
-
-    var promptText = request.Input.Trim();
-    if (string.IsNullOrWhiteSpace(promptText) && attachments.Length > 0)
-    {
-        promptText = imageAttachments.Length > 0 && fileAttachments.Length > 0
-            ? "Please analyze the attached content and files."
-            : imageAttachments.Length > 0
-                ? "Please analyze the attached image."
-                : "Please use the attached file as context.";
-    }
-
-    var promptBuilder = new StringBuilder(promptText);
-    if (fileAttachments.Length > 0)
-    {
-        promptBuilder.AppendLine();
-        promptBuilder.AppendLine();
-        promptBuilder.AppendLine("Attached file context:");
-
-        foreach (var attachment in fileAttachments)
-        {
-            promptBuilder.AppendLine();
-            promptBuilder.AppendLine(BuildFileAttachmentPromptBlock(attachment));
-        }
-    }
-
-    if (imageAttachments.Length == 0)
-    {
-        return promptBuilder.ToString();
-    }
-
-    var items = new List<object>
-    {
-        new { type = "text", content = promptBuilder.ToString() },
-    };
-
-    items.AddRange(imageAttachments.Select(attachment => new { type = "image", data_url = attachment.DataUrl }));
-    return items;
-}
-
-static string BuildFileAttachmentPromptBlock(ChatAttachmentDto attachment)
-{
-    var builder = new StringBuilder();
-    builder.Append("File: ").Append(attachment.Name);
-    if (!string.IsNullOrWhiteSpace(attachment.ContentType))
-    {
-        builder.Append(" (").Append(attachment.ContentType).Append(')');
-    }
-
-    builder.AppendLine();
-
-    if (!string.IsNullOrWhiteSpace(attachment.TextContent))
-    {
-        builder.AppendLine("```text");
-        builder.AppendLine(attachment.TextContent.TrimEnd());
-        builder.AppendLine("```");
-        if (attachment.Truncated)
-        {
-            builder.AppendLine("File content was truncated before sending.");
-        }
-    }
-    else
-    {
-        builder.AppendLine("Binary file attached. Text extraction was not available.");
-    }
-
-    return builder.ToString().TrimEnd();
-}
-
-static string BuildChatMarkdown(ChatDetailDto chat)
-{
-    var builder = new StringBuilder();
-    builder.AppendLine($"# {chat.Title}");
-    builder.AppendLine();
-    builder.AppendLine($"- Model: {chat.ModelKey}");
-    builder.AppendLine($"- Created: {chat.CreatedAt:O}");
-    builder.AppendLine($"- Updated: {chat.UpdatedAt:O}");
-    if (!string.IsNullOrWhiteSpace(chat.SystemPrompt))
-    {
-        builder.AppendLine($"- System prompt configured: yes");
-    }
-    if (!string.IsNullOrWhiteSpace(chat.Reasoning))
-    {
-        builder.AppendLine($"- Reasoning: {chat.Reasoning}");
-    }
-    if (chat.ContextLength.HasValue)
-    {
-        builder.AppendLine($"- Context length: {chat.ContextLength.Value}");
-    }
-    if (chat.Temperature.HasValue)
-    {
-        builder.AppendLine($"- Temperature: {chat.Temperature.Value:0.##}");
-    }
-    if (chat.SelectedMcpServerIds.Count > 0)
-    {
-        builder.AppendLine($"- MCP servers: {string.Join(", ", chat.SelectedMcpServerIds)}");
-    }
-
-    if (!string.IsNullOrWhiteSpace(chat.SystemPrompt))
-    {
-        builder.AppendLine();
-        builder.AppendLine("## System Prompt");
-        builder.AppendLine();
-        builder.AppendLine(chat.SystemPrompt.TrimEnd());
-    }
-
-    foreach (var message in chat.Messages)
-    {
-        builder.AppendLine();
-        builder.AppendLine("---");
-        builder.AppendLine();
-        AppendMessageMarkdown(builder, message);
-    }
-
-    return builder.ToString().TrimEnd();
-}
-
-static string BuildMessageMarkdown(ChatDetailDto chat, ChatMessageDto message)
-{
-    var builder = new StringBuilder();
-    builder.AppendLine($"# {chat.Title}");
-    builder.AppendLine();
-    AppendMessageMarkdown(builder, message);
-    return builder.ToString().TrimEnd();
-}
-
-static void AppendMessageMarkdown(StringBuilder builder, ChatMessageDto message)
-{
-    builder.Append("## ").Append(message.Role switch
-    {
-        "assistant" => "Assistant",
-        "user" => "User",
-        _ => message.Role,
-    });
-
-    if (!string.IsNullOrWhiteSpace(message.ModelKey) && string.Equals(message.Role, "assistant", StringComparison.OrdinalIgnoreCase))
-    {
-        builder.Append(" • ").Append(message.ModelKey);
-    }
-
-    builder.AppendLine();
-    builder.AppendLine();
-    builder.AppendLine($"- Timestamp: {message.CreatedAt:O}");
-
-    if (!string.IsNullOrWhiteSpace(message.Content))
-    {
-        builder.AppendLine();
-        builder.AppendLine(message.Content.TrimEnd());
-    }
-
-    if (!string.IsNullOrWhiteSpace(message.Reasoning))
-    {
-        builder.AppendLine();
-        builder.AppendLine("### Thinking");
-        builder.AppendLine();
-        builder.AppendLine(message.Reasoning.TrimEnd());
-    }
-
-    if (message.Attachments.Count > 0)
-    {
-        builder.AppendLine();
-        builder.AppendLine("### Attachments");
-
-        foreach (var attachment in message.Attachments)
-        {
-            builder.AppendLine();
-            builder.AppendLine($"- Kind: {attachment.Kind}");
-            builder.AppendLine($"- Name: {attachment.Name}");
-            if (!string.IsNullOrWhiteSpace(attachment.ContentType))
-            {
-                builder.AppendLine($"- Content type: {attachment.ContentType}");
-            }
-            builder.AppendLine($"- Size bytes: {attachment.SizeBytes}");
-            builder.AppendLine($"- Truncated: {attachment.Truncated}");
-
-            if (!string.IsNullOrWhiteSpace(attachment.TextContent))
-            {
-                builder.AppendLine();
-                builder.AppendLine("```text");
-                builder.AppendLine(attachment.TextContent.TrimEnd());
-                builder.AppendLine("```");
-            }
-
-            if (!string.IsNullOrWhiteSpace(attachment.DataUrl))
-            {
-                builder.AppendLine();
-                builder.AppendLine("```text");
-                builder.AppendLine(attachment.DataUrl.Trim());
-                builder.AppendLine("```");
-            }
-        }
-    }
-
-    if (message.ToolCalls.Count > 0)
-    {
-        builder.AppendLine();
-        builder.AppendLine("### Tools Used");
-
-        foreach (var toolCall in message.ToolCalls)
-        {
-            builder.AppendLine();
-            builder.AppendLine($"#### {toolCall.Tool}");
-            builder.AppendLine();
-            builder.AppendLine("```json");
-            builder.AppendLine(toolCall.ArgumentsJson.Trim());
-            builder.AppendLine("```");
-
-            if (!string.IsNullOrWhiteSpace(toolCall.Output))
-            {
-                builder.AppendLine();
-                builder.AppendLine("```text");
-                builder.AppendLine(toolCall.Output.TrimEnd());
-                builder.AppendLine("```");
-            }
-        }
-    }
-
-    if (message.InvalidToolCalls.Count > 0)
-    {
-        builder.AppendLine();
-        builder.AppendLine("### Tool Errors");
-
-        foreach (var toolCall in message.InvalidToolCalls)
-        {
-            builder.AppendLine();
-            builder.AppendLine($"#### {toolCall.Reason}");
-            builder.AppendLine();
-            builder.AppendLine("```json");
-            builder.AppendLine(toolCall.MetadataJson.Trim());
-            builder.AppendLine("```");
-        }
-    }
-
-    if (message.Stats is not null)
-    {
-        builder.AppendLine();
-        builder.AppendLine("### Stats");
-        builder.AppendLine();
-        builder.AppendLine($"- Input tokens: {message.Stats.InputTokens}");
-        builder.AppendLine($"- Output tokens: {message.Stats.TotalOutputTokens}");
-        builder.AppendLine($"- Reasoning tokens: {message.Stats.ReasoningOutputTokens}");
-        builder.AppendLine($"- Tokens per second: {message.Stats.TokensPerSecond}");
-        builder.AppendLine($"- Time to first token: {message.Stats.TimeToFirstTokenSeconds}");
-        if (message.Stats.ModelLoadTimeSeconds.HasValue)
-        {
-            builder.AppendLine($"- Model load time seconds: {message.Stats.ModelLoadTimeSeconds.Value}");
-        }
-        if (message.Stats.ContextLimit.HasValue)
-        {
-            builder.AppendLine($"- Context limit: {message.Stats.ContextLimit.Value}");
-        }
-    }
-}
-
-static string SanitizeFileName(string value)
-{
-    if (string.IsNullOrWhiteSpace(value))
-    {
-        return "chat-export";
-    }
-
-    var invalidCharacters = Path.GetInvalidFileNameChars();
-    var sanitized = new string(value
-        .Select(character => invalidCharacters.Contains(character) ? '-' : character)
-        .ToArray())
-        .Trim();
-
-    return string.IsNullOrWhiteSpace(sanitized) ? "chat-export" : sanitized;
-}
-
 internal static class ChatStreamHelpers
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -825,7 +506,6 @@ internal static class ChatStreamHelpers
         var dataLines = new List<string>();
         string? eventType = null;
         LmStudioChatResponse? finalResponse = null;
-        var canWriteDownstream = true;
 
         while (!reader.EndOfStream)
         {
@@ -856,10 +536,7 @@ internal static class ChatStreamHelpers
                         }
                     }
 
-                    if (canWriteDownstream)
-                    {
-                        canWriteDownstream = await TryWriteSseAsync(response, eventType, downstreamPayload, cancellationToken);
-                    }
+                    await WriteSseAsync(response, eventType, downstreamPayload, cancellationToken);
                 }
 
                 eventType = null;
@@ -911,7 +588,7 @@ internal static class ChatStreamHelpers
         };
     }
 
-    internal static AssistantPersistenceResult BuildAssistantPersistence(LmStudioChatResponse response, ChatStreamRequest request)
+    internal static AssistantPersistenceResult BuildAssistantPersistence(LmStudioChatResponse response, string modelKey, int? contextLength)
     {
         var messages = new List<string>();
         var reasoning = new List<string>();
@@ -957,30 +634,9 @@ internal static class ChatStreamHelpers
                     response.Stats.TokensPerSecond,
                     response.Stats.TimeToFirstTokenSeconds,
                     response.Stats.ModelLoadTimeSeconds,
-                    request.ContextLength),
+                    contextLength),
             response.ResponseId,
-            request.Model);
-    }
-
-    internal static async Task<bool> TryWriteSseAsync(HttpResponse response, string eventType, string payload, CancellationToken cancellationToken)
-    {
-        try
-        {
-            await WriteSseAsync(response, eventType, payload, cancellationToken);
-            return true;
-        }
-        catch (IOException)
-        {
-            return false;
-        }
-        catch (ObjectDisposedException)
-        {
-            return false;
-        }
-        catch (OperationCanceledException) when (response.HttpContext.RequestAborted.IsCancellationRequested)
-        {
-            return false;
-        }
+            modelKey);
     }
 
     internal static async Task WriteSseAsync(HttpResponse response, string eventType, string payload, CancellationToken cancellationToken)

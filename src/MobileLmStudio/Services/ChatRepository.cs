@@ -286,6 +286,19 @@ ORDER BY created_utc ASC;";
             previousResponseId);
     }
 
+    public async Task UpdateTitleAsync(string chatId, string title, CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = "UPDATE chats SET title = @title, updated_utc = @updated_utc WHERE id = @chatId;";
+        command.Parameters.AddWithValue("@title", title);
+        command.Parameters.AddWithValue("@updated_utc", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("@chatId", chatId);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     public async Task<StoredChatRecord> CreateChatAsync(ChatStreamRequest request, CancellationToken cancellationToken)
     {
         var chatId = $"chat_{Guid.NewGuid():N}";

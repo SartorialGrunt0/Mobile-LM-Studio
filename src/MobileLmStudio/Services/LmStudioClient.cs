@@ -121,6 +121,35 @@ internal sealed class LmStudioClient
         return _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
     }
 
+    public async Task<string?> GenerateTitleAsync(string model, string input, CancellationToken cancellationToken)
+    {
+        var prompt = input.Length > 500 ? input[..500] : input;
+        using var request = CreateRequest(HttpMethod.Post, "/api/v1/chat", new LmStudioChatRequest
+        {
+            Model = model,
+            Input = prompt,
+            SystemPrompt = "Generate a short chat title (5 words max). Respond with only the title, no quotes or extra text.",
+            Stream = false,
+            Store = false,
+        });
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return null;
+        }
+
+        var result = await response.Content.ReadFromJsonAsync<LmStudioChatResponse>(JsonOptions, cancellationToken);
+        var title = result?.Output?.FirstOrDefault(o => o.Type == "message")?.Content?.Trim();
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return null;
+        }
+
+        title = title.Trim('"', '\'');
+        return title.Length > 60 ? $"{title[..57]}..." : title;
+    }
+
     public async Task<string> ReadErrorAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         var content = await response.Content.ReadAsStringAsync(cancellationToken);
