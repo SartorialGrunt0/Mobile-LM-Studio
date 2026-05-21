@@ -9,12 +9,19 @@ const state = {
   selectedReasoning: "default",
   selectedMcpServerIds: new Set(),
   selectedContextLength: "",
+  selectedTemperature: "",
   systemPrompt: "",
   statusText: "Ready",
   statusTone: "neutral",
   isSending: false,
+  isModelLoading: false,
+  modelLoadTarget: "",
   theme: "light",
   composerAttachments: [],
+  configBannerDismissed: loadBannerDismissal(),
+  confirmDialog: null,
+  pendingStreamRecoveryChatId: null,
+  stickToBottom: true,
 };
 
 const elements = {
@@ -30,6 +37,8 @@ const elements = {
   settingsButton: document.getElementById("settings-button"),
   logoutButton: document.getElementById("logout-button"),
   configBanner: document.getElementById("config-banner"),
+  configBannerText: document.getElementById("config-banner-text"),
+  configBannerDismiss: document.getElementById("config-banner-dismiss"),
   chatToolbar: document.getElementById("chat-toolbar"),
   currentChatTitle: document.getElementById("current-chat-title"),
   exportChatButton: document.getElementById("export-chat-button"),
@@ -38,6 +47,7 @@ const elements = {
   loadModelButton: document.getElementById("load-model-button"),
   unloadModelButton: document.getElementById("unload-model-button"),
   contextLengthInput: document.getElementById("context-length-input"),
+  temperatureInput: document.getElementById("temperature-input"),
   reasoningSelect: document.getElementById("reasoning-select"),
   systemPromptInput: document.getElementById("system-prompt-input"),
   modelMeta: document.getElementById("model-meta"),
@@ -65,13 +75,23 @@ const elements = {
   settingsBaseUrl: document.getElementById("settings-base-url"),
   settingsApiToken: document.getElementById("settings-api-token"),
   settingsMcpPath: document.getElementById("settings-mcp-path"),
+  settingsRequireLogin: document.getElementById("settings-require-login"),
+  settingsPin: document.getElementById("settings-pin"),
+  settingsPinHint: document.getElementById("settings-pin-hint"),
   settingsSaveButton: document.getElementById("settings-save-button"),
   settingsCancelButton: document.getElementById("settings-cancel-button"),
   settingsStatus: document.getElementById("settings-status"),
+  confirmScreen: document.getElementById("confirm-screen"),
+  confirmTitle: document.getElementById("confirm-title"),
+  confirmMessage: document.getElementById("confirm-message"),
+  confirmAcceptButton: document.getElementById("confirm-accept-button"),
+  confirmCancelButton: document.getElementById("confirm-cancel-button"),
 };
 
 applyTheme(loadThemePreference());
+renderActionIcons();
 bindEvents();
+renderConfirmDialog();
 void initialize();
 
 async function initialize() {
@@ -107,13 +127,27 @@ function bindEvents() {
   elements.newChatButton.addEventListener("click", () => {
     startNewDraft();
     render();
+    syncMessageScroll(true);
     setDrawerOpen(false);
+  });
+  elements.configBannerDismiss?.addEventListener("click", () => dismissConfigBanner());
+  elements.messageScroll.addEventListener("scroll", () => updateStickToBottom());
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      void recoverInterruptedStream();
+    }
+  });
+  window.addEventListener("focus", () => {
+    void recoverInterruptedStream();
+  });
+  window.addEventListener("pageshow", () => {
+    void recoverInterruptedStream();
   });
 
   elements.chatList.addEventListener("click", event => {
     const deleteButton = event.target.closest("button[data-delete-chat-id]");
     if (deleteButton) {
-      void deleteChat(deleteButton.dataset.deleteChatId);
+      promptDeleteChat(deleteButton.dataset.deleteChatId);
       return;
     }
 
@@ -180,6 +214,10 @@ function bindEvents() {
     state.selectedContextLength = elements.contextLengthInput.value.trim();
   });
 
+  elements.temperatureInput?.addEventListener("input", () => {
+    state.selectedTemperature = elements.temperatureInput.value.trim();
+  });
+
   elements.reasoningSelect.addEventListener("change", () => {
     state.selectedReasoning = elements.reasoningSelect.value;
   });
@@ -215,7 +253,7 @@ function bindEvents() {
   elements.loadModelButton.addEventListener("click", () => void loadSelectedModel());
   elements.unloadModelButton.addEventListener("click", () => void unloadSelectedModel());
   elements.exportChatButton.addEventListener("click", () => void exportCurrentChat());
-  elements.deleteChatButton.addEventListener("click", () => void deleteChat(state.currentChatId));
+  elements.deleteChatButton.addEventListener("click", () => promptDeleteChat(state.currentChatId));
   elements.logoutButton.addEventListener("click", () => void logout());
 
   elements.loginForm.addEventListener("submit", event => {
@@ -233,8 +271,16 @@ function bindEvents() {
     event.preventDefault();
     void saveSettings();
   });
+  elements.settingsRequireLogin?.addEventListener("change", () => renderSettingsSecurityState());
 
   elements.settingsButton.addEventListener("click", () => openSettings());
+  elements.confirmCancelButton?.addEventListener("click", () => closeConfirmDialog());
+  elements.confirmAcceptButton?.addEventListener("click", () => void confirmPendingAction());
+  elements.confirmScreen?.addEventListener("click", event => {
+    if (event.target === elements.confirmScreen) {
+      closeConfirmDialog();
+    }
+  });
 }
 
 async function refreshBootstrap() {
@@ -371,6 +417,7 @@ function ensureSelectionDefaults() {
 function startNewDraft() {
   ensureSelectionDefaults();
   state.currentChatId = null;
+  state.stickToBottom = true;
   state.currentChat = {
     id: null,
     title: "New Chat",
@@ -378,6 +425,7 @@ function startNewDraft() {
     systemPrompt: state.systemPrompt,
     reasoning: normalizeReasoningValue(),
     contextLength: parseOptionalNumber(state.selectedContextLength),
+    temperature: parseOptionalFloat(state.selectedTemperature),
     selectedMcpServerIds: Array.from(state.selectedMcpServerIds),
     messages: [],
   };
@@ -391,9 +439,12 @@ async function openChat(chatId, suppressStatus = false) {
     state.systemPrompt = state.currentChat.systemPrompt || "";
     state.selectedReasoning = state.currentChat.reasoning || "default";
     state.selectedContextLength = state.currentChat.contextLength ? String(state.currentChat.contextLength) : String(suggestContextLength(findSelectedModel()));
+    state.selectedTemperature = typeof state.currentChat.temperature === "number" ? String(state.currentChat.temperature) : "";
     state.selectedMcpServerIds = new Set(state.currentChat.selectedMcpServerIds || []);
+    state.stickToBottom = true;
     normalizeReasoningSelection();
     render();
+    syncMessageScroll(true);
     setDrawerOpen(false);
 
     if (!suppressStatus) {
@@ -405,17 +456,59 @@ async function openChat(chatId, suppressStatus = false) {
 }
 
 async function loadSelectedModel() {
-  if (!state.selectedModel) {
+  if (!state.selectedModel || state.isModelLoading) {
     setStatus("Choose a model first.", "error");
     return;
   }
 
+  const selectedModel = findSelectedModel();
+  if (!selectedModel) {
+    setStatus("Selected model was not found.", "error");
+    return;
+  }
+
+  if ((selectedModel.loadedInstances || []).length > 0) {
+    renderModelDetails();
+    return;
+  }
+
+  const loadedElsewhere = getLoadedModels(selectedModel.key);
+  if (loadedElsewhere.length > 0) {
+    openConfirmDialog({
+      kind: "swap-model",
+      title: "Unload the current model first?",
+      message: `${loadedElsewhere.map(model => model.key).join(", ")} is already loaded. Unload it before loading ${selectedModel.key}?`,
+      confirmText: "Unload and Load",
+      danger: false,
+      payload: {
+        targetModel: selectedModel.key,
+        unloadInstanceIds: loadedElsewhere.flatMap(model => (model.loadedInstances || []).map(instance => instance.id)),
+      },
+    });
+    return;
+  }
+
+  await executeModelLoad(selectedModel.key);
+}
+
+async function executeModelLoad(modelKey, unloadInstanceIds = []) {
+  state.isModelLoading = true;
+  state.modelLoadTarget = modelKey;
+  renderControls();
+
   try {
-    setStatus("Loading model...", "busy");
+    setStatus(unloadInstanceIds.length > 0 ? "Switching models..." : "Loading model...", "busy");
+    for (const instanceId of unloadInstanceIds) {
+      await fetchJson("/api/models/unload", {
+        method: "POST",
+        body: JSON.stringify({ instanceId }),
+      });
+    }
+
     await fetchJson("/api/models/load", {
       method: "POST",
       body: JSON.stringify({
-        model: state.selectedModel,
+        model: modelKey,
         contextLength: parseOptionalNumber(state.selectedContextLength),
         flashAttention: true,
       }),
@@ -425,6 +518,10 @@ async function loadSelectedModel() {
     setStatus("Model loaded.", "neutral");
   } catch (error) {
     setStatus(error.message || "Unable to load the selected model.", "error");
+  } finally {
+    state.isModelLoading = false;
+    state.modelLoadTarget = "";
+    renderControls();
   }
 }
 
@@ -487,6 +584,7 @@ async function sendMessage() {
     systemPrompt: state.systemPrompt.trim() || null,
     reasoning: normalizeReasoningValue(),
     contextLength: parseOptionalNumber(state.selectedContextLength),
+    temperature: parseOptionalFloat(state.selectedTemperature),
     mcpServerIds: Array.from(state.selectedMcpServerIds),
     attachments,
   };
@@ -510,6 +608,7 @@ async function sendMessage() {
   };
 
   state.currentChat.messages = state.currentChat.messages || [];
+  const expectedMessageCount = state.currentChat.messages.length + 2;
   state.currentChat.messages.push({
     id: `local_${Date.now()}`,
     role: "user",
@@ -528,8 +627,10 @@ async function sendMessage() {
   state.currentChat.systemPrompt = state.systemPrompt;
   state.currentChat.reasoning = normalizeReasoningValue();
   state.currentChat.contextLength = parseOptionalNumber(state.selectedContextLength);
+  state.currentChat.temperature = parseOptionalFloat(state.selectedTemperature);
   state.currentChat.selectedMcpServerIds = Array.from(state.selectedMcpServerIds);
   state.isSending = true;
+  state.stickToBottom = true;
   elements.messageInput.value = "";
   state.composerAttachments = [];
   autoResizeComposer();
@@ -570,7 +671,11 @@ async function sendMessage() {
 
     setStatus("Response complete.", "neutral");
   } catch (error) {
-    pendingAssistant.content = error.message || "The request failed.";
+    if (await tryRecoverStreamFailure(error, expectedMessageCount)) {
+      return;
+    }
+
+    pendingAssistant.content = describeStreamFailure(error);
     pendingAssistant.pending = false;
     setStatus(error.message || "The request failed.", "error");
     renderMessages();
@@ -705,7 +810,9 @@ function applyFinalResponse(message, data) {
   message.pending = false;
 
   if (message.stats) {
-    setStatus(`${formatNumber(message.stats.tokensPerSecond)} tok/s, ${formatInteger(message.stats.inputTokens)} context tokens used.`, "neutral");
+    setStatus(`Response complete at ${formatNumber(message.stats.tokensPerSecond)} tok/s.`, "neutral");
+  } else {
+    setStatus("Response complete.", "neutral");
   }
 }
 
@@ -717,6 +824,7 @@ function render() {
   renderChatList();
   renderMessages();
   renderComposerAttachments();
+  renderConfirmDialog();
   renderStatus();
 }
 
@@ -747,14 +855,27 @@ function renderBanner() {
 
   if (warnings.length === 0) {
     elements.configBanner.hidden = true;
-    elements.configBanner.textContent = "";
+    if (elements.configBannerText) {
+      elements.configBannerText.textContent = "";
+    } else {
+      elements.configBanner.textContent = "";
+    }
     elements.configBanner.classList.remove("warning");
+    return;
+  }
+
+  if (state.configBannerDismissed) {
+    elements.configBanner.hidden = true;
     return;
   }
 
   elements.configBanner.hidden = false;
   elements.configBanner.classList.add("warning");
-  elements.configBanner.textContent = warnings.join(" ");
+  if (elements.configBannerText) {
+    elements.configBannerText.textContent = warnings.join(" ");
+  } else {
+    elements.configBanner.textContent = warnings.join(" ");
+  }
 }
 
 function renderControls() {
@@ -764,12 +885,16 @@ function renderControls() {
   renderMcpServers();
   elements.systemPromptInput.value = state.systemPrompt;
   elements.contextLengthInput.value = state.selectedContextLength;
+  if (elements.temperatureInput) {
+    elements.temperatureInput.value = state.selectedTemperature;
+  }
   const locked = !state.bootstrap?.authenticated && state.bootstrap?.requireLogin;
   elements.sendButton.disabled = state.isSending || locked || !state.selectedModel;
   elements.messageInput.disabled = state.isSending || locked;
   elements.attachImageButton.disabled = state.isSending || locked;
   elements.attachFileButton.disabled = state.isSending || locked;
   elements.themeButton.setAttribute("aria-pressed", state.theme === "dark" ? "true" : "false");
+  renderThemeButton();
 }
 
 function renderChatToolbar() {
@@ -779,7 +904,7 @@ function renderChatToolbar() {
   const hasSavedChat = Boolean(state.currentChatId);
   elements.exportChatButton.disabled = !hasSavedChat;
   elements.deleteChatButton.disabled = !hasSavedChat;
-  elements.chatToolbar.classList.toggle("is-draft", !hasSavedChat);
+  elements.chatToolbar?.classList.toggle("is-draft", !hasSavedChat);
 }
 
 function renderModelOptions() {
@@ -816,12 +941,15 @@ function renderModelDetails() {
   const model = findSelectedModel();
   if (!model) {
     elements.modelMeta.textContent = "No model selected.";
+    elements.loadModelButton.innerHTML = "Load";
     elements.loadModelButton.disabled = true;
     elements.unloadModelButton.disabled = true;
     return;
   }
 
   const loadedCount = (model.loadedInstances || []).length;
+  const isLoadingSelected = state.isModelLoading && state.modelLoadTarget === model.key;
+  const otherLoadedModels = getLoadedModels(model.key);
   const capabilityParts = [];
   if (model.capabilities?.trainedForToolUse) {
     capabilityParts.push("tool use");
@@ -834,17 +962,22 @@ function renderModelDetails() {
   }
 
   const metaParts = [
-    model.key,
-    describeModelSource(model),
-    loadedCount > 0 ? `${loadedCount} instance loaded` : "auto-load on send",
+    model.displayName && model.displayName !== model.key ? model.displayName : model.key,
+    model.displayName && model.displayName !== model.key ? `key: ${model.key}` : null,
+    loadedCount > 0 ? `${loadedCount} instance loaded` : otherLoadedModels.length > 0 ? `${otherLoadedModels.length} other model loaded` : "auto-load on send",
     model.paramsString || model.architecture || "",
     `${formatInteger(model.maxContextLength)} max ctx`,
     capabilityParts.join(" • "),
   ].filter(Boolean);
 
   elements.modelMeta.textContent = metaParts.join(" • ");
-  elements.loadModelButton.disabled = false;
-  elements.unloadModelButton.disabled = loadedCount === 0;
+  elements.loadModelButton.disabled = state.isModelLoading || loadedCount > 0;
+  elements.loadModelButton.innerHTML = isLoadingSelected
+    ? '<span class="button-content"><span class="button-spinner" aria-hidden="true"></span><span>Loading...</span></span>'
+    : loadedCount > 0
+      ? "Loaded"
+      : "Load";
+  elements.unloadModelButton.disabled = state.isModelLoading || loadedCount === 0;
 }
 
 function renderMcpServers() {
@@ -879,19 +1012,17 @@ function renderChatList() {
           <span class="chat-meta">${escapeHtml(chat.modelKey)} • ${escapeHtml(formatRelativeDate(chat.updatedAt))}</span>
           <span class="chat-preview">${escapeHtml(chat.preview || "Saved chat")}</span>
         </button>
-        <button type="button" class="chat-delete" data-delete-chat-id="${escapeAttribute(chat.id)}" aria-label="Delete ${escapeAttribute(chat.title)}">Delete</button>
+        <button type="button" class="chat-delete" data-delete-chat-id="${escapeAttribute(chat.id)}" aria-label="Delete ${escapeAttribute(chat.title)}" title="Delete ${escapeAttribute(chat.title)}">${renderIcon("trash")}</button>
       </article>`)
     .join("");
 }
 
-function renderMessages() {
+function renderMessages(forceScroll = false) {
   const messages = state.currentChat?.messages || [];
   const hasMessages = messages.length > 0;
   elements.emptyState.hidden = hasMessages;
   elements.messageList.innerHTML = hasMessages ? messages.map(renderMessageCard).join("") : "";
-  requestAnimationFrame(() => {
-    elements.messageScroll.scrollTop = elements.messageScroll.scrollHeight;
-  });
+  syncMessageScroll(forceScroll || state.isSending);
 }
 
 function renderStatus() {
@@ -957,7 +1088,7 @@ function renderMessageCard(message) {
     ? `
       <div class="message-actions">
         ${canRetry ? '<button type="button" class="ghost-button message-action-button" data-retry-chat="true">Retry Prompt</button>' : ""}
-        ${canExport ? `<button type="button" class="ghost-button message-action-button" data-export-message-id="${escapeAttribute(message.id)}">Export Markdown</button>` : ""}
+        ${canExport ? `<button type="button" class="ghost-button icon-button message-action-icon" data-export-message-id="${escapeAttribute(message.id)}" aria-label="Export Markdown" title="Export Markdown">${renderIcon("download")}</button>` : ""}
       </div>`
     : "";
 
@@ -1023,6 +1154,10 @@ function normalizeReasoningSelection() {
 
 function normalizeReasoningValue() {
   return state.selectedReasoning === "default" ? null : state.selectedReasoning;
+}
+
+function getLoadedModels(excludeKey = "") {
+  return state.models.filter(model => model.key !== excludeKey && (model.loadedInstances || []).length > 0);
 }
 
 function findSelectedModel() {
@@ -1155,6 +1290,15 @@ function parseOptionalNumber(value) {
   }
 
   const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseOptionalFloat(value) {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
@@ -1299,19 +1443,10 @@ function isLatestAssistantMessage(message) {
 
 function buildModelOptionLabel(model) {
   return [
-    model.key,
-    describeModelSource(model),
+    model.displayName && model.displayName !== model.key ? model.displayName : model.key,
+    model.displayName && model.displayName !== model.key ? model.key : null,
     (model.loadedInstances || []).length > 0 ? "Loaded" : null,
   ].filter(Boolean).join(" • ");
-}
-
-function describeModelSource(model) {
-  const format = String(model?.format || "").toLowerCase();
-  if (format === "gguf" || format === "mlx") {
-    return "Local";
-  }
-
-  return model?.format ? capitalize(model.format) : "Remote";
 }
 
 function resolveModelKeyFromInstanceId(instanceId) {
@@ -1356,10 +1491,6 @@ function toggleTheme() {
 
 async function deleteChat(chatId) {
   if (!chatId || state.isSending) {
-    return;
-  }
-
-  if (!window.confirm("Delete this chat permanently?")) {
     return;
   }
 
@@ -1477,8 +1608,10 @@ async function retryLatestPrompt() {
   };
 
   state.currentChat.messages = state.currentChat.messages || [];
+  const expectedMessageCount = state.currentChat.messages.length + 1;
   state.currentChat.messages.push(pendingAssistant);
   state.isSending = true;
+  state.stickToBottom = true;
   setStatus("Retrying latest prompt...", "busy");
   render();
 
@@ -1506,7 +1639,11 @@ async function retryLatestPrompt() {
 
     setStatus("Response complete.", "neutral");
   } catch (error) {
-    pendingAssistant.content = error.message || "Unable to retry the latest prompt.";
+    if (await tryRecoverStreamFailure(error, expectedMessageCount)) {
+      return;
+    }
+
+    pendingAssistant.content = describeStreamFailure(error, "Unable to retry the latest prompt.");
     pendingAssistant.pending = false;
     setStatus(error.message || "Unable to retry the latest prompt.", "error");
     renderMessages();
@@ -1865,9 +2002,17 @@ async function openSettings() {
     elements.settingsBaseUrl.value = settings.baseUrl || "";
     elements.settingsApiToken.value = settings.apiToken || "";
     elements.settingsMcpPath.value = settings.mcpConfigPath || "";
+    if (elements.settingsRequireLogin) {
+      elements.settingsRequireLogin.checked = Boolean(settings.requireLogin);
+    }
+    if (elements.settingsPin) {
+      elements.settingsPin.value = "";
+      elements.settingsPin.dataset.hasExistingPin = settings.requireLogin ? "true" : "false";
+    }
     elements.settingsStatus.hidden = true;
     elements.settingsStatus.textContent = "";
     elements.modelScreen.hidden = true;
+    renderSettingsSecurityState();
     elements.settingsScreen.hidden = false;
   } catch (error) {
     setStatus("Unable to load settings.", "error");
@@ -1887,6 +2032,8 @@ async function saveSettings() {
     baseUrl: elements.settingsBaseUrl.value.trim(),
     apiToken: elements.settingsApiToken.value.trim(),
     mcpConfigPath: elements.settingsMcpPath.value.trim(),
+    requireLogin: elements.settingsRequireLogin?.checked || false,
+    pin: elements.settingsPin?.value.trim() || "",
   };
 
   try {
@@ -1898,6 +2045,11 @@ async function saveSettings() {
     elements.settingsStatus.textContent = "Settings saved.";
     elements.settingsStatus.className = "settings-status success";
     elements.settingsStatus.hidden = false;
+    if (elements.settingsPin) {
+      elements.settingsPin.value = "";
+      elements.settingsPin.dataset.hasExistingPin = payload.requireLogin ? "true" : "false";
+    }
+    renderSettingsSecurityState();
 
     await refreshBootstrap();
     render();
@@ -1909,5 +2061,238 @@ async function saveSettings() {
     elements.settingsStatus.hidden = false;
   } finally {
     elements.settingsSaveButton.disabled = false;
+  }
+}
+
+function renderSettingsSecurityState() {
+  if (!elements.settingsRequireLogin || !elements.settingsPin || !elements.settingsPinHint) {
+    return;
+  }
+
+  const enabled = elements.settingsRequireLogin.checked;
+  const hasExistingPin = elements.settingsPin.dataset.hasExistingPin === "true";
+  elements.settingsPin.disabled = !enabled;
+  elements.settingsPin.placeholder = enabled
+    ? hasExistingPin
+      ? "Leave blank to keep the current PIN"
+      : "Enter a PIN"
+    : "PIN disabled";
+  elements.settingsPinHint.textContent = enabled
+    ? hasExistingPin
+      ? "Leave the PIN blank to keep the current one, or enter a new PIN to replace it."
+      : "Enter a PIN to enable sign-in."
+    : "Sign-in is currently disabled.";
+}
+
+function dismissConfigBanner() {
+  state.configBannerDismissed = true;
+  saveBannerDismissal(true);
+  renderBanner();
+}
+
+function loadBannerDismissal() {
+  try {
+    return localStorage.getItem("mls-config-banner-dismissed") === "true";
+  } catch {
+    return false;
+  }
+}
+
+function saveBannerDismissal(value) {
+  try {
+    localStorage.setItem("mls-config-banner-dismissed", value ? "true" : "false");
+  } catch {
+  }
+}
+
+function updateStickToBottom() {
+  const remaining = elements.messageScroll.scrollHeight - elements.messageScroll.scrollTop - elements.messageScroll.clientHeight;
+  state.stickToBottom = remaining <= 72;
+}
+
+function syncMessageScroll(force = false) {
+  if (!force && !state.stickToBottom) {
+    return;
+  }
+
+  requestAnimationFrame(() => {
+    elements.messageScroll.scrollTop = elements.messageScroll.scrollHeight;
+    state.stickToBottom = true;
+  });
+}
+
+function openConfirmDialog(dialog) {
+  state.confirmDialog = dialog;
+  renderConfirmDialog();
+}
+
+function closeConfirmDialog() {
+  state.confirmDialog = null;
+  renderConfirmDialog();
+}
+
+function renderConfirmDialog() {
+  if (!elements.confirmScreen || !elements.confirmTitle || !elements.confirmMessage || !elements.confirmAcceptButton) {
+    return;
+  }
+
+  if (!state.confirmDialog) {
+    elements.confirmScreen.hidden = true;
+    return;
+  }
+
+  elements.confirmTitle.textContent = state.confirmDialog.title;
+  elements.confirmMessage.textContent = state.confirmDialog.message;
+  elements.confirmAcceptButton.textContent = state.confirmDialog.confirmText;
+  elements.confirmAcceptButton.classList.toggle("danger-button", state.confirmDialog.danger !== false);
+  elements.confirmScreen.hidden = false;
+}
+
+async function confirmPendingAction() {
+  const dialog = state.confirmDialog;
+  closeConfirmDialog();
+
+  if (!dialog) {
+    return;
+  }
+
+  switch (dialog.kind) {
+    case "delete-chat":
+      await deleteChat(dialog.payload.chatId);
+      break;
+    case "swap-model":
+      await executeModelLoad(dialog.payload.targetModel, dialog.payload.unloadInstanceIds);
+      break;
+    default:
+      break;
+  }
+}
+
+function promptDeleteChat(chatId) {
+  if (!chatId || state.isSending) {
+    return;
+  }
+
+  const chat = state.chats.find(candidate => candidate.id === chatId);
+  openConfirmDialog({
+    kind: "delete-chat",
+    title: "Delete this chat?",
+    message: `"${chat?.title || "This chat"}" will be removed permanently.`,
+    confirmText: "Delete",
+    danger: true,
+    payload: { chatId },
+  });
+}
+
+function renderActionIcons() {
+  setButtonIcon(elements.drawerToggle, "menu");
+  setButtonIcon(elements.modelButton, "sliders");
+  setButtonIcon(elements.exportChatButton, "download");
+  setButtonIcon(elements.deleteChatButton, "trash");
+  setButtonIcon(elements.settingsButton, "gear");
+  setButtonIcon(elements.logoutButton, "lock");
+  setButtonIcon(elements.attachImageButton, "image");
+  setButtonIcon(elements.attachFileButton, "file");
+  setButtonIcon(elements.configBannerDismiss, "close");
+  renderThemeButton();
+}
+
+function renderThemeButton() {
+  setButtonIcon(elements.themeButton, state.theme === "dark" ? "sun" : "moon");
+  const label = state.theme === "dark" ? "Switch to light mode" : "Switch to dark mode";
+  elements.themeButton.title = label;
+  elements.themeButton.setAttribute("aria-label", label);
+}
+
+function setButtonIcon(element, iconName) {
+  if (!element) {
+    return;
+  }
+
+  element.innerHTML = renderIcon(iconName);
+}
+
+function renderIcon(iconName) {
+  switch (iconName) {
+    case "menu":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"></path><path d="M4 12h16"></path><path d="M4 17h16"></path></svg>';
+    case "sliders":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16"></path><path d="M4 12h16"></path><path d="M4 18h16"></path><circle cx="9" cy="6" r="2"></circle><circle cx="15" cy="12" r="2"></circle><circle cx="11" cy="18" r="2"></circle></svg>';
+    case "download":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10"></path><path d="m8 10 4 4 4-4"></path><path d="M5 19h14"></path></svg>';
+    case "trash":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M6 7l1 12h10l1-12"></path><path d="M9 7V4h6v3"></path></svg>';
+    case "gear":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"></circle><path d="M19.4 15a1 1 0 0 0 .2 1.1l.1.1a2 2 0 0 1 0 2.8 2 2 0 0 1-2.8 0l-.1-.1a1 1 0 0 0-1.1-.2 1 1 0 0 0-.6.9V20a2 2 0 0 1-4 0v-.2a1 1 0 0 0-.6-.9 1 1 0 0 0-1.1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1 1 0 0 0 .2-1.1 1 1 0 0 0-.9-.6H4a2 2 0 0 1 0-4h.2a1 1 0 0 0 .9-.6 1 1 0 0 0-.2-1.1l-.1-.1a2 2 0 0 1 2.8-2.8l.1.1a1 1 0 0 0 1.1.2 1 1 0 0 0 .6-.9V4a2 2 0 0 1 4 0v.2a1 1 0 0 0 .6.9 1 1 0 0 0 1.1-.2l.1-.1a2 2 0 0 1 2.8 2.8l-.1.1a1 1 0 0 0-.2 1.1 1 1 0 0 0 .9.6H20a2 2 0 0 1 0 4h-.2a1 1 0 0 0-.9.6Z"></path></svg>';
+    case "lock":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"></rect><path d="M8 11V8a4 4 0 1 1 8 0v3"></path></svg>';
+    case "image":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"></rect><circle cx="9" cy="10" r="1.5"></circle><path d="m21 15-4.5-4.5L8 19"></path></svg>';
+    case "file":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"></path><path d="M14 3v5h5"></path></svg>';
+    case "close":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"></path><path d="M18 6 6 18"></path></svg>';
+    case "sun":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2.5"></path><path d="M12 19.5V22"></path><path d="m4.9 4.9 1.8 1.8"></path><path d="m17.3 17.3 1.8 1.8"></path><path d="M2 12h2.5"></path><path d="M19.5 12H22"></path><path d="m4.9 19.1 1.8-1.8"></path><path d="m17.3 6.7 1.8-1.8"></path></svg>';
+    case "moon":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"></path></svg>';
+    default:
+      return "";
+  }
+}
+
+function looksLikeTransientStreamFailure(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  return message.includes("load failed")
+    || message.includes("failed to fetch")
+    || message.includes("networkerror")
+    || message.includes("network connection was lost");
+}
+
+function describeStreamFailure(error, fallback = "The request failed.") {
+  if (looksLikeTransientStreamFailure(error)) {
+    return "The live stream disconnected. This chat will refresh automatically when the page reconnects.";
+  }
+
+  return error?.message || fallback;
+}
+
+async function tryRecoverStreamFailure(error, expectedMessageCount) {
+  if (!state.currentChatId || !looksLikeTransientStreamFailure(error)) {
+    return false;
+  }
+
+  state.pendingStreamRecoveryChatId = state.currentChatId;
+
+  try {
+    await refreshChats();
+    await openChat(state.currentChatId, true);
+    const messages = state.currentChat?.messages || [];
+    const latestMessage = messages[messages.length - 1];
+    if (messages.length >= expectedMessageCount && latestMessage?.role === "assistant") {
+      state.pendingStreamRecoveryChatId = null;
+      setStatus("Live stream reconnected and refreshed.", "neutral");
+      syncMessageScroll(true);
+      return true;
+    }
+  } catch {
+  }
+
+  return false;
+}
+
+async function recoverInterruptedStream() {
+  if (!state.pendingStreamRecoveryChatId || state.isSending) {
+    return;
+  }
+
+  try {
+    await refreshChats();
+    if (state.currentChatId === state.pendingStreamRecoveryChatId) {
+      await openChat(state.currentChatId, true);
+    }
+    state.pendingStreamRecoveryChatId = null;
+    setStatus("Chat refreshed after reconnecting.", "neutral");
+  } catch {
   }
 }

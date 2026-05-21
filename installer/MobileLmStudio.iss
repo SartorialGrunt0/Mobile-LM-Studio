@@ -251,7 +251,7 @@ begin
   EnablePinCheckBox.Caption := 'Require sign-in with a PIN';
   EnablePinCheckBox.OnClick := @UpdatePinState;
 
-  TopPosition := EnablePinCheckBox.Top + EnablePinCheckBox.Height + ScaleY(4);
+  TopPosition := EnablePinCheckBox.Top + EnablePinCheckBox.Height + ScaleY(8);
 
   PinLabel := TNewStaticText.Create(ConfigurationPage);
   PinLabel.Parent := ConfigurationPage.Surface;
@@ -262,8 +262,8 @@ begin
   PinEdit := TNewEdit.Create(ConfigurationPage);
   PinEdit.Parent := ConfigurationPage.Surface;
   PinEdit.Left := 0;
-  PinEdit.Top := PinLabel.Top + PinLabel.Height + ScaleY(2);
-  PinEdit.Width := ScaleX(140);
+  PinEdit.Top := PinLabel.Top + PinLabel.Height + ScaleY(4);
+  PinEdit.Width := ConfigurationPage.SurfaceWidth;
   PinEdit.PasswordChar := '*';
 
   SuccessLinkLabel := TNewStaticText.Create(WizardForm);

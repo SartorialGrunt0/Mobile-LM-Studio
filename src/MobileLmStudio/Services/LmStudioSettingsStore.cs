@@ -18,7 +18,7 @@ internal sealed class LmStudioSettingsStore
 
     public string SettingsPath { get; }
 
-    public void Save(SettingsResponse settings)
+    public void Save(SettingsResponse settings, SecurityOptions security)
     {
         var settingsDirectory = Path.GetDirectoryName(SettingsPath);
         if (!string.IsNullOrWhiteSpace(settingsDirectory))
@@ -33,6 +33,12 @@ internal sealed class LmStudioSettingsStore
                 BaseUrl = settings.BaseUrl,
                 ApiToken = settings.ApiToken,
                 McpConfigPath = settings.McpConfigPath,
+            },
+            Security = new
+            {
+                PinHash = security.PinHash,
+                PinSalt = security.PinSalt,
+                Iterations = security.Iterations,
             },
         };
 

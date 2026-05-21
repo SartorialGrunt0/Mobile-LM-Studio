@@ -179,12 +179,12 @@ api.AddEndpointFilter(async (invocationContext, next) =>
     return Results.Unauthorized();
 });
 
-api.MapGet("/settings", (LmStudioConnectionService connectionService) =>
+api.MapGet("/settings", (LmStudioConnectionService connectionService, PinSecurityService pinSecurity) =>
 {
-    return Results.Ok(connectionService.GetSettings());
+    return Results.Ok(connectionService.GetSettings(pinSecurity.IsConfigured));
 });
 
-api.MapPost("/settings", (SettingsUpdateRequest request, LmStudioConnectionService connectionService, LmStudioSettingsStore settingsStore, ILogger<Program> logger) =>
+api.MapPost("/settings", async Task<IResult> (SettingsUpdateRequest request, HttpContext context, LmStudioConnectionService connectionService, LmStudioSettingsStore settingsStore, PinSecurityService pinSecurity, ILogger<Program> logger) =>
 {
     var normalizedSettings = NormalizeSettings(request);
     var validationErrors = ValidateSettings(normalizedSettings);
@@ -193,19 +193,48 @@ api.MapPost("/settings", (SettingsUpdateRequest request, LmStudioConnectionServi
         return Results.ValidationProblem(validationErrors);
     }
 
+    SecurityOptions securitySettings;
     try
     {
-        settingsStore.Save(normalizedSettings);
+        securitySettings = pinSecurity.BuildUpdatedSecurity(request.RequireLogin, request.Pin);
+    }
+    catch (ArgumentException exception)
+    {
+        return Results.ValidationProblem(new Dictionary<string, string[]>
+        {
+            ["pin"] = [exception.Message],
+        });
+    }
+
+    try
+    {
+        settingsStore.Save(normalizedSettings, securitySettings);
         connectionService.UpdateSettings(normalizedSettings.BaseUrl, normalizedSettings.ApiToken, normalizedSettings.McpConfigPath);
+        pinSecurity.UpdateSecurity(securitySettings);
+
+        if (!string.IsNullOrWhiteSpace(securitySettings.PinHash))
+        {
+            if (context.User.Identity?.IsAuthenticated != true)
+            {
+                var claims = new[] { new Claim(ClaimTypes.Name, "mobile-user") };
+                var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme));
+                await context.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, principal);
+            }
+        }
+        else if (context.User.Identity?.IsAuthenticated == true)
+        {
+            await context.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+        }
 
         logger.LogInformation(
-            "LM Studio settings updated. BaseUrl={BaseUrl}; McpConfigPath={McpConfigPath}; ApiTokenConfigured={HasApiToken}; RuntimeSettingsPath={RuntimeSettingsPath}",
+            "LM Studio settings updated. BaseUrl={BaseUrl}; McpConfigPath={McpConfigPath}; ApiTokenConfigured={HasApiToken}; RequireLogin={RequireLogin}; RuntimeSettingsPath={RuntimeSettingsPath}",
             normalizedSettings.BaseUrl,
             normalizedSettings.McpConfigPath,
             !string.IsNullOrWhiteSpace(normalizedSettings.ApiToken),
+            !string.IsNullOrWhiteSpace(securitySettings.PinHash),
             settingsStore.SettingsPath);
 
-        return Results.Ok(connectionService.GetSettings());
+        return Results.Ok(connectionService.GetSettings(!string.IsNullOrWhiteSpace(securitySettings.PinHash)));
     }
     catch (Exception exception)
     {
@@ -335,6 +364,7 @@ api.MapPost("/chats/{chatId}/retry/stream", async Task (HttpContext context, str
         retryContext.SystemPrompt,
         retryContext.Reasoning,
         retryContext.ContextLength,
+        retryContext.Temperature,
         retryContext.McpServerIds.ToArray(),
         retryContext.Attachments.ToArray());
 
@@ -400,7 +430,8 @@ static SettingsResponse NormalizeSettings(SettingsUpdateRequest request)
     return new SettingsResponse(
         request.BaseUrl.Trim(),
         request.ApiToken.Trim(),
-        request.McpConfigPath.Trim());
+    request.McpConfigPath.Trim(),
+    request.RequireLogin);
 }
 
 static Dictionary<string, string[]>? ValidateSettings(SettingsResponse settings)
@@ -482,6 +513,7 @@ static async Task ExecuteChatStreamAsync(
         SystemPrompt = request.SystemPrompt,
         Reasoning = request.Reasoning,
         ContextLength = request.ContextLength,
+        Temperature = request.Temperature,
         PreviousResponseId = previousResponseId,
         Integrations = integrations.Length == 0 ? null : integrations,
     }, cancellationToken);
@@ -601,6 +633,10 @@ static string BuildChatMarkdown(ChatDetailDto chat)
     if (chat.ContextLength.HasValue)
     {
         builder.AppendLine($"- Context length: {chat.ContextLength.Value}");
+    }
+    if (chat.Temperature.HasValue)
+    {
+        builder.AppendLine($"- Temperature: {chat.Temperature.Value:0.##}");
     }
     if (chat.SelectedMcpServerIds.Count > 0)
     {

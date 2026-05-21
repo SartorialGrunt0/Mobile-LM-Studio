@@ -44,11 +44,11 @@ internal sealed class LmStudioConnectionService
         set { lock (_lock) { _mcpConfigPath = value; } }
     }
 
-    public SettingsResponse GetSettings()
+    public SettingsResponse GetSettings(bool requireLogin)
     {
         lock (_lock)
         {
-            return new SettingsResponse(_baseUrl, _apiToken, _mcpConfigPath);
+            return new SettingsResponse(_baseUrl, _apiToken, _mcpConfigPath, requireLogin);
         }
     }
 

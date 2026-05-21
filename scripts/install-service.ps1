@@ -230,19 +230,54 @@ function Assert-TcpPortAvailable {
 function Ensure-WebFirewallRule {
     param([int]$Port)
 
-    $ruleName = "Mobile LM Studio Web UI"
+    $ruleName = "Mobile LM Studio Web UI ($Port)"
+    $legacyRuleName = "Mobile LM Studio Web UI"
+    $netSecurityError = $null
+    $netshError = $null
 
-    try {
-        Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue |
-            Remove-NetFirewallRule -ErrorAction SilentlyContinue
-    } catch {
+    if ((Get-Command Get-NetFirewallRule -ErrorAction SilentlyContinue) -and (Get-Command New-NetFirewallRule -ErrorAction SilentlyContinue)) {
+        try {
+            foreach ($name in @($legacyRuleName, $ruleName) | Select-Object -Unique) {
+                Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue |
+                    Remove-NetFirewallRule -ErrorAction SilentlyContinue
+            }
+
+            New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow -Enabled True -Profile Any -Protocol TCP -LocalPort $Port | Out-Null
+            return
+        } catch {
+            $netSecurityError = $_.Exception.Message
+        }
     }
 
-    try {
-        New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow -Enabled True -Profile Any -Protocol TCP -LocalPort $Port | Out-Null
-    } catch {
-        throw "Unable to create the Windows Firewall rule '$ruleName' for TCP port $Port. $($_.Exception.Message)"
+    $netsh = Get-Command netsh.exe -ErrorAction SilentlyContinue
+    if ($netsh) {
+        try {
+            & $netsh.Source advfirewall firewall delete rule name="$legacyRuleName" protocol=TCP localport=$Port | Out-Null
+            & $netsh.Source advfirewall firewall delete rule name="$ruleName" protocol=TCP localport=$Port | Out-Null
+            & $netsh.Source advfirewall firewall add rule name="$ruleName" dir=in action=allow enable=yes profile=any protocol=TCP localport=$Port | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                return
+            }
+
+            $netshError = "netsh exited with code $LASTEXITCODE"
+        } catch {
+            $netshError = $_.Exception.Message
+        }
     }
+
+    if (-not [string]::IsNullOrWhiteSpace($netSecurityError) -and -not [string]::IsNullOrWhiteSpace($netshError)) {
+        throw "Unable to create the Windows Firewall rule '$ruleName' for TCP port $Port. PowerShell firewall error: $netSecurityError. netsh error: $netshError"
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($netSecurityError)) {
+        throw "Unable to create the Windows Firewall rule '$ruleName' for TCP port $Port. $netSecurityError"
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($netshError)) {
+        throw "Unable to create the Windows Firewall rule '$ruleName' for TCP port $Port. $netshError"
+    }
+
+    throw "Unable to create the Windows Firewall rule '$ruleName' for TCP port $Port."
 }
 
 function Get-RecentStartupFailureMessage {
@@ -485,6 +520,6 @@ if (-not [string]::IsNullOrWhiteSpace($resolvedFailurePath) -and (Test-Path $res
 
 Write-Host "Installed Mobile LM Studio as service '$ServiceName'."
 Write-Host "Web URL: $ListenUrl"
-Write-Host "Windows Firewall: opened TCP port $($listenEndpoint.Port)."
+Write-Host "Windows Firewall: ensured inbound TCP rule for port $($listenEndpoint.Port)."
 Write-Host "Install path: $resolvedInstallPath"
 Write-Host "Data file: $DataPath"

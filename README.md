@@ -7,6 +7,7 @@ Mobile LM Studio is a lightweight ASP.NET Core web client for LM Studio that is 
 - Mobile-first chat UI with a minimal layout
 - Saved chat history in SQLite
 - Model list, load, and unload controls
+- Model temperature control alongside context and reasoning settings
 - Streamed responses with live text rendering
 - Expandable reasoning and tool call sections
 - End-of-response stats including tokens per second and input context usage
@@ -70,6 +71,8 @@ When you run the setup executable, the install wizard lets you choose:
 
 After installation finishes, the final page shows a link to `http://localhost:{port}` using the port selected in the wizard.
 
+You can also enable, disable, or rotate the UI PIN later from the in-app Settings screen.
+
 ## Install As A Service
 
 Publish the app first, then run:
@@ -99,7 +102,7 @@ The generated `appsettings.json` contains:
 - `Security:PinHash` and `Security:PinSalt`: PBKDF2-protected PIN values
 - `Web:Urls`: URL binding for the service
 
-Runtime changes made in the UI are also persisted to `%PROGRAMDATA%\MobileLmStudio\appsettings.runtime.json` so the service keeps the latest LM Studio base URL, API token, and MCP config path across restarts.
+Runtime changes made in the UI are also persisted to `%PROGRAMDATA%\MobileLmStudio\appsettings.runtime.json` so the service keeps the latest LM Studio base URL, API token, MCP config path, and PIN requirement across restarts.
 
 Service diagnostics are written to `%PROGRAMDATA%\MobileLmStudio\logs\YYYYMMDD.log`.
 

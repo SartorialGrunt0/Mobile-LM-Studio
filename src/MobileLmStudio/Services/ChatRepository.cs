@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS chats (
     system_prompt TEXT NULL,
     reasoning TEXT NULL,
     context_length INTEGER NULL,
+    temperature REAL NULL,
     selected_mcp_json TEXT NOT NULL,
     last_response_id TEXT NULL,
     created_utc TEXT NOT NULL,
@@ -64,6 +65,7 @@ CREATE TABLE IF NOT EXISTS messages (
     FOREIGN KEY(chat_id) REFERENCES chats(id) ON DELETE CASCADE
 );", cancellationToken);
 
+        await EnsureColumnAsync(connection, "chats", "temperature", "REAL NULL", cancellationToken);
         await EnsureColumnAsync(connection, "messages", "attachments_json", "TEXT NOT NULL DEFAULT '[]'", cancellationToken);
         await EnsureColumnAsync(connection, "messages", "model_key", "TEXT NULL", cancellationToken);
         await ExecuteAsync(connection, "CREATE INDEX IF NOT EXISTS idx_messages_chat_created ON messages(chat_id, created_utc);", cancellationToken);
@@ -118,7 +120,7 @@ ORDER BY c.updated_utc DESC;";
         await connection.OpenAsync(cancellationToken);
 
         const string chatSql = @"
-SELECT id, title, model_key, system_prompt, reasoning, context_length, selected_mcp_json, last_response_id, created_utc, updated_utc
+SELECT id, title, model_key, system_prompt, reasoning, context_length, temperature, selected_mcp_json, last_response_id, created_utc, updated_utc
 FROM chats
 WHERE id = @chatId
 LIMIT 1;";
@@ -140,10 +142,11 @@ LIMIT 1;";
             chatReader.IsDBNull(3) ? null : chatReader.GetString(3),
             chatReader.IsDBNull(4) ? null : chatReader.GetString(4),
             chatReader.IsDBNull(5) ? null : chatReader.GetInt32(5),
-            DeserializeStringList(chatReader.GetString(6)),
-            chatReader.IsDBNull(7) ? null : chatReader.GetString(7),
-            ParseDateTimeOffset(chatReader.GetString(8)),
+            chatReader.IsDBNull(6) ? null : chatReader.GetDouble(6),
+            DeserializeStringList(chatReader.GetString(7)),
+            chatReader.IsDBNull(8) ? null : chatReader.GetString(8),
             ParseDateTimeOffset(chatReader.GetString(9)),
+            ParseDateTimeOffset(chatReader.GetString(10)),
             await GetMessagesAsync(connection, chatId, cancellationToken));
 
         return detail;
@@ -155,7 +158,7 @@ LIMIT 1;";
         await connection.OpenAsync(cancellationToken);
 
         const string sql = @"
-SELECT id, title, model_key, system_prompt, reasoning, context_length, selected_mcp_json, last_response_id, created_utc, updated_utc
+SELECT id, title, model_key, system_prompt, reasoning, context_length, temperature, selected_mcp_json, last_response_id, created_utc, updated_utc
 FROM chats
 WHERE id = @chatId
 LIMIT 1;";
@@ -177,10 +180,11 @@ LIMIT 1;";
             reader.IsDBNull(3) ? null : reader.GetString(3),
             reader.IsDBNull(4) ? null : reader.GetString(4),
             reader.IsDBNull(5) ? null : reader.GetInt32(5),
-            DeserializeStringList(reader.GetString(6)),
-            reader.IsDBNull(7) ? null : reader.GetString(7),
-            ParseDateTimeOffset(reader.GetString(8)),
-            ParseDateTimeOffset(reader.GetString(9)));
+            reader.IsDBNull(6) ? null : reader.GetDouble(6),
+            DeserializeStringList(reader.GetString(7)),
+            reader.IsDBNull(8) ? null : reader.GetString(8),
+            ParseDateTimeOffset(reader.GetString(9)),
+            ParseDateTimeOffset(reader.GetString(10)));
     }
 
     public async Task<bool> DeleteChatAsync(string chatId, CancellationToken cancellationToken)
@@ -201,7 +205,7 @@ LIMIT 1;";
         await connection.OpenAsync(cancellationToken);
 
         const string chatSql = @"
-SELECT id, title, model_key, system_prompt, reasoning, context_length, selected_mcp_json, last_response_id, created_utc, updated_utc
+SELECT id, title, model_key, system_prompt, reasoning, context_length, temperature, selected_mcp_json, last_response_id, created_utc, updated_utc
 FROM chats
 WHERE id = @chatId
 LIMIT 1;";
@@ -223,10 +227,11 @@ LIMIT 1;";
             chatReader.IsDBNull(3) ? null : chatReader.GetString(3),
             chatReader.IsDBNull(4) ? null : chatReader.GetString(4),
             chatReader.IsDBNull(5) ? null : chatReader.GetInt32(5),
-            DeserializeStringList(chatReader.GetString(6)),
-            chatReader.IsDBNull(7) ? null : chatReader.GetString(7),
-            ParseDateTimeOffset(chatReader.GetString(8)),
-            ParseDateTimeOffset(chatReader.GetString(9)));
+            chatReader.IsDBNull(6) ? null : chatReader.GetDouble(6),
+            DeserializeStringList(chatReader.GetString(7)),
+            chatReader.IsDBNull(8) ? null : chatReader.GetString(8),
+            ParseDateTimeOffset(chatReader.GetString(9)),
+            ParseDateTimeOffset(chatReader.GetString(10)));
 
         const string messageSql = @"
 SELECT role, content_markdown, attachments_json, response_id
@@ -275,6 +280,7 @@ ORDER BY created_utc ASC;";
             chat.SystemPrompt,
             chat.Reasoning,
             chat.ContextLength,
+            chat.Temperature,
             chat.SelectedMcpServerIds,
             latestUserAttachments,
             previousResponseId);
@@ -291,8 +297,8 @@ ORDER BY created_utc ASC;";
         await connection.OpenAsync(cancellationToken);
 
         const string sql = @"
-INSERT INTO chats (id, title, model_key, system_prompt, reasoning, context_length, selected_mcp_json, last_response_id, created_utc, updated_utc)
-VALUES (@id, @title, @model_key, @system_prompt, @reasoning, @context_length, @selected_mcp_json, NULL, @created_utc, @updated_utc);";
+INSERT INTO chats (id, title, model_key, system_prompt, reasoning, context_length, temperature, selected_mcp_json, last_response_id, created_utc, updated_utc)
+VALUES (@id, @title, @model_key, @system_prompt, @reasoning, @context_length, @temperature, @selected_mcp_json, NULL, @created_utc, @updated_utc);";
 
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
@@ -302,12 +308,13 @@ VALUES (@id, @title, @model_key, @system_prompt, @reasoning, @context_length, @s
         command.Parameters.AddWithValue("@system_prompt", DbValue(request.SystemPrompt));
         command.Parameters.AddWithValue("@reasoning", DbValue(request.Reasoning));
         command.Parameters.AddWithValue("@context_length", DbValue(request.ContextLength));
+        command.Parameters.AddWithValue("@temperature", DbValue(request.Temperature));
         command.Parameters.AddWithValue("@selected_mcp_json", selectedMcpJson);
         command.Parameters.AddWithValue("@created_utc", now.ToString("O"));
         command.Parameters.AddWithValue("@updated_utc", now.ToString("O"));
         await command.ExecuteNonQueryAsync(cancellationToken);
 
-        return new StoredChatRecord(chatId, title, request.Model, request.SystemPrompt, request.Reasoning, request.ContextLength, request.McpServerIds ?? [], null, now, now);
+        return new StoredChatRecord(chatId, title, request.Model, request.SystemPrompt, request.Reasoning, request.ContextLength, request.Temperature, request.McpServerIds ?? [], null, now, now);
     }
 
     public async Task SaveUserMessageAsync(string chatId, ChatStreamRequest request, CancellationToken cancellationToken)
@@ -327,6 +334,7 @@ SET model_key = @model_key,
     system_prompt = @system_prompt,
     reasoning = @reasoning,
     context_length = @context_length,
+    temperature = @temperature,
     selected_mcp_json = @selected_mcp_json,
     updated_utc = @updated_utc
 WHERE id = @chat_id;";
@@ -334,6 +342,7 @@ WHERE id = @chat_id;";
             updateChat.Parameters.AddWithValue("@system_prompt", DbValue(request.SystemPrompt));
             updateChat.Parameters.AddWithValue("@reasoning", DbValue(request.Reasoning));
             updateChat.Parameters.AddWithValue("@context_length", DbValue(request.ContextLength));
+            updateChat.Parameters.AddWithValue("@temperature", DbValue(request.Temperature));
             updateChat.Parameters.AddWithValue("@selected_mcp_json", JsonSerializer.Serialize(request.McpServerIds ?? [], JsonOptions));
             updateChat.Parameters.AddWithValue("@updated_utc", now.ToString("O"));
             updateChat.Parameters.AddWithValue("@chat_id", chatId);
@@ -375,6 +384,7 @@ SET model_key = @model_key,
     system_prompt = @system_prompt,
     reasoning = @reasoning,
     context_length = @context_length,
+    temperature = @temperature,
     selected_mcp_json = @selected_mcp_json,
     last_response_id = @last_response_id,
     updated_utc = @updated_utc
@@ -383,6 +393,7 @@ WHERE id = @chat_id;";
             updateChat.Parameters.AddWithValue("@system_prompt", DbValue(request.SystemPrompt));
             updateChat.Parameters.AddWithValue("@reasoning", DbValue(request.Reasoning));
             updateChat.Parameters.AddWithValue("@context_length", DbValue(request.ContextLength));
+            updateChat.Parameters.AddWithValue("@temperature", DbValue(request.Temperature));
             updateChat.Parameters.AddWithValue("@selected_mcp_json", JsonSerializer.Serialize(request.McpServerIds ?? [], JsonOptions));
             updateChat.Parameters.AddWithValue("@last_response_id", DbValue(assistant.ResponseId));
             updateChat.Parameters.AddWithValue("@updated_utc", now.ToString("O"));
@@ -522,6 +533,11 @@ ORDER BY created_utc ASC;";
     }
 
     private static object DbValue(int? value)
+    {
+        return value.HasValue ? value.Value : DBNull.Value;
+    }
+
+    private static object DbValue(double? value)
     {
         return value.HasValue ? value.Value : DBNull.Value;
     }

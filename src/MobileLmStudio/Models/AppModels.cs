@@ -84,6 +84,7 @@ internal sealed record ChatDetailDto(
     string? SystemPrompt,
     string? Reasoning,
     int? ContextLength,
+    double? Temperature,
     IReadOnlyList<string> SelectedMcpServerIds,
     string? LastResponseId,
     DateTimeOffset CreatedAt,
@@ -137,6 +138,7 @@ internal sealed record ChatStreamRequest(
     string? SystemPrompt,
     string? Reasoning,
     int? ContextLength,
+    double? Temperature,
     string[]? McpServerIds,
     ChatAttachmentDto[]? Attachments);
 
@@ -156,6 +158,7 @@ internal sealed record RetryPromptContext(
     string? SystemPrompt,
     string? Reasoning,
     int? ContextLength,
+    double? Temperature,
     IReadOnlyList<string> McpServerIds,
     IReadOnlyList<ChatAttachmentDto> Attachments,
     string? PreviousResponseId);
@@ -167,6 +170,7 @@ internal sealed record StoredChatRecord(
     string? SystemPrompt,
     string? Reasoning,
     int? ContextLength,
+    double? Temperature,
     IReadOnlyList<string> SelectedMcpServerIds,
     string? LastResponseId,
     DateTimeOffset CreatedAt,
@@ -270,6 +274,9 @@ internal sealed class LmStudioChatRequest
     [JsonPropertyName("context_length")]
     public int? ContextLength { get; init; }
 
+    [JsonPropertyName("temperature")]
+    public double? Temperature { get; init; }
+
     [JsonPropertyName("store")]
     public bool Store { get; init; } = true;
 
@@ -353,9 +360,12 @@ internal sealed record LmStudioChatStats(
 internal sealed record SettingsResponse(
     string BaseUrl,
     string ApiToken,
-    string McpConfigPath);
+    string McpConfigPath,
+    bool RequireLogin);
 
 internal sealed record SettingsUpdateRequest(
     string BaseUrl,
     string ApiToken,
-    string McpConfigPath);
+    string McpConfigPath,
+    bool RequireLogin,
+    string? Pin);
