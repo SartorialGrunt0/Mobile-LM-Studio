@@ -325,16 +325,19 @@ api.MapPost("/chats/{chatId}/retry/stream", async Task (string chatId, HttpConte
         return;
     }
 
-    var availableServers = await catalog.GetServersAsync(cancellationToken);
-    var selectedServerIds = retryContext.McpServerIds
-        .Where(serverId => !string.IsNullOrWhiteSpace(serverId))
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    var retryRequest = new ChatStreamRequest(
+        chatId,
+        retryContext.Model,
+        retryContext.Input,
+        retryContext.SystemPrompt,
+        retryContext.Reasoning,
+        retryContext.ContextLength,
+        retryContext.Temperature,
+        retryContext.McpServerIds.ToArray(),
+        retryContext.Attachments.ToArray());
 
-    var integrations = availableServers
-        .Where(server => selectedServerIds.Contains(server.Id))
-        .Select(server => new LmStudioPluginIntegration { Id = $"mcp/{server.Id}" })
-        .ToArray();
+    var availableServers = await catalog.GetServersAsync(cancellationToken);
+    var integrations = BuildMcpIntegrations(availableServers, retryContext.McpServerIds);
 
     context.Response.StatusCode = StatusCodes.Status200OK;
     context.Response.ContentType = "text/event-stream";
@@ -343,7 +346,7 @@ api.MapPost("/chats/{chatId}/retry/stream", async Task (string chatId, HttpConte
     using var lmResponse = await client.StartChatStreamAsync(new LmStudioChatRequest
     {
         Model = retryContext.Model,
-        Input = retryContext.Input,
+        Input = BuildLmStudioInput(retryRequest),
         SystemPrompt = retryContext.SystemPrompt,
         Reasoning = retryContext.Reasoning,
         ContextLength = retryContext.ContextLength,
@@ -360,7 +363,6 @@ api.MapPost("/chats/{chatId}/retry/stream", async Task (string chatId, HttpConte
     }
 
     await using var stream = await lmResponse.Content.ReadAsStreamAsync(cancellationToken);
-    var retryRequest = new ChatStreamRequest(chatId, retryContext.Model, retryContext.Input, retryContext.SystemPrompt, retryContext.Reasoning, retryContext.ContextLength, retryContext.Temperature, retryContext.McpServerIds.ToArray(), retryContext.Attachments.ToArray());
     var finalResponse = await ChatStreamHelpers.RelayLmStudioStreamAsync(stream, context.Response, cancellationToken);
     if (finalResponse is null) return;
 
@@ -370,10 +372,10 @@ api.MapPost("/chats/{chatId}/retry/stream", async Task (string chatId, HttpConte
 
 api.MapPost("/chats/stream", async Task (HttpContext context, ChatStreamRequest request, ChatRepository repository, McpCatalogService catalog, LmStudioClient client, CancellationToken cancellationToken) =>
 {
-    if (string.IsNullOrWhiteSpace(request.Model) || string.IsNullOrWhiteSpace(request.Input))
+    if (string.IsNullOrWhiteSpace(request.Model) || (string.IsNullOrWhiteSpace(request.Input) && (request.Attachments?.Length ?? 0) == 0))
     {
         context.Response.StatusCode = StatusCodes.Status400BadRequest;
-        await context.Response.WriteAsJsonAsync(new { error = "Model and input are required." }, cancellationToken);
+        await context.Response.WriteAsJsonAsync(new { error = "Model and either text or an attachment are required." }, cancellationToken);
         return;
     }
 
@@ -391,15 +393,7 @@ api.MapPost("/chats/stream", async Task (HttpContext context, ChatStreamRequest 
     await repository.SaveUserMessageAsync(chat.Id, request, cancellationToken);
 
     var availableServers = await catalog.GetServersAsync(cancellationToken);
-    var selectedServerIds = (request.McpServerIds ?? [])
-        .Where(serverId => !string.IsNullOrWhiteSpace(serverId))
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-    var integrations = availableServers
-        .Where(server => selectedServerIds.Contains(server.Id))
-        .Select(server => new LmStudioPluginIntegration { Id = $"mcp/{server.Id}" })
-        .ToArray();
+    var integrations = BuildMcpIntegrations(availableServers, request.McpServerIds ?? []);
 
     context.Response.StatusCode = StatusCodes.Status200OK;
     context.Response.ContentType = "text/event-stream";
@@ -409,10 +403,11 @@ api.MapPost("/chats/stream", async Task (HttpContext context, ChatStreamRequest 
     using var lmResponse = await client.StartChatStreamAsync(new LmStudioChatRequest
     {
         Model = request.Model,
-        Input = request.Input,
+        Input = BuildLmStudioInput(request),
         SystemPrompt = request.SystemPrompt,
         Reasoning = request.Reasoning,
         ContextLength = request.ContextLength,
+        Temperature = request.Temperature,
         PreviousResponseId = chat.LastResponseId,
         Integrations = integrations.Length == 0 ? null : integrations,
     }, cancellationToken);
@@ -494,6 +489,114 @@ static string[] ResolveHostOverrideUrls(IConfiguration configuration)
         .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
         .Where(value => !string.IsNullOrWhiteSpace(value))
         .ToArray();
+}
+
+static LmStudioPluginIntegration[] BuildMcpIntegrations(IReadOnlyList<McpServerDto> availableServers, IEnumerable<string> selectedServerIds)
+{
+    var requestedIds = selectedServerIds
+        .Where(serverId => !string.IsNullOrWhiteSpace(serverId))
+        .Select(NormalizeSelectedMcpServerId)
+        .Where(serverId => !string.IsNullOrWhiteSpace(serverId))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
+    if (requestedIds.Length == 0)
+    {
+        return [];
+    }
+
+    return availableServers
+        .Where(server => requestedIds.Contains(server.Id, StringComparer.OrdinalIgnoreCase)
+            || requestedIds.Contains(server.Label, StringComparer.OrdinalIgnoreCase))
+        .Select(server => new LmStudioPluginIntegration { Id = $"mcp/{server.Id}" })
+        .DistinctBy(integration => integration.Id, StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+}
+
+static string NormalizeSelectedMcpServerId(string serverId)
+{
+    var normalized = serverId.Trim();
+    return normalized.StartsWith("mcp/", StringComparison.OrdinalIgnoreCase)
+        ? normalized[4..]
+        : normalized;
+}
+
+static object BuildLmStudioInput(ChatStreamRequest request)
+{
+    var attachments = request.Attachments ?? [];
+    var imageAttachments = attachments
+        .Where(attachment => string.Equals(attachment.Kind, "image", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(attachment.DataUrl))
+        .ToArray();
+
+    var fileAttachments = attachments
+        .Where(attachment => !string.Equals(attachment.Kind, "image", StringComparison.OrdinalIgnoreCase))
+        .ToArray();
+
+    var promptText = request.Input.Trim();
+    if (string.IsNullOrWhiteSpace(promptText) && attachments.Length > 0)
+    {
+        promptText = imageAttachments.Length > 0 && fileAttachments.Length > 0
+            ? "Please analyze the attached content and files."
+            : imageAttachments.Length > 0
+                ? "Please analyze the attached image."
+                : "Please use the attached file as context.";
+    }
+
+    var promptBuilder = new StringBuilder(promptText);
+    if (fileAttachments.Length > 0)
+    {
+        promptBuilder.AppendLine();
+        promptBuilder.AppendLine();
+        promptBuilder.AppendLine("Attached file context:");
+
+        foreach (var attachment in fileAttachments)
+        {
+            promptBuilder.AppendLine();
+            promptBuilder.AppendLine(BuildFileAttachmentPromptBlock(attachment));
+        }
+    }
+
+    if (imageAttachments.Length == 0)
+    {
+        return promptBuilder.ToString();
+    }
+
+    var items = new List<object>
+    {
+        new { type = "text", content = promptBuilder.ToString() },
+    };
+
+    items.AddRange(imageAttachments.Select(attachment => new { type = "image", data_url = attachment.DataUrl }));
+    return items;
+}
+
+static string BuildFileAttachmentPromptBlock(ChatAttachmentDto attachment)
+{
+    var builder = new StringBuilder();
+    builder.Append("File: ").Append(attachment.Name);
+    if (!string.IsNullOrWhiteSpace(attachment.ContentType))
+    {
+        builder.Append(" (").Append(attachment.ContentType).Append(')');
+    }
+
+    builder.AppendLine();
+
+    if (!string.IsNullOrWhiteSpace(attachment.TextContent))
+    {
+        builder.AppendLine("```text");
+        builder.AppendLine(attachment.TextContent.TrimEnd());
+        builder.AppendLine("```");
+        if (attachment.Truncated)
+        {
+            builder.AppendLine("File content was truncated before sending.");
+        }
+    }
+    else
+    {
+        builder.AppendLine("Binary file attached. Text extraction was not available.");
+    }
+
+    return builder.ToString().TrimEnd();
 }
 
 internal static class ChatStreamHelpers

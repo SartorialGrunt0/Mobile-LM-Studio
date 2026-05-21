@@ -47,7 +47,8 @@ internal sealed class McpCatalogService
             {
                 if (property.Value.ValueKind == JsonValueKind.Object && LooksLikeServerDefinition(property.Value))
                 {
-                    servers.Add(CreateServer(property.Name, property.Value));
+                    var label = ReadString(property.Value, "label") ?? ReadString(property.Value, "name") ?? property.Name;
+                    servers.Add(CreateServer(property.Name, label, property.Value));
                 }
             }
         }
@@ -66,7 +67,8 @@ internal sealed class McpCatalogService
         {
             foreach (var server in property.EnumerateObject())
             {
-                servers.Add(CreateServer(server.Name, server.Value));
+                var label = ReadString(server.Value, "label") ?? ReadString(server.Value, "name") ?? server.Name;
+                servers.Add(CreateServer(server.Name, label, server.Value));
             }
 
             return true;
@@ -76,10 +78,11 @@ internal sealed class McpCatalogService
         {
             foreach (var item in property.EnumerateArray())
             {
-                var label = ReadString(item, "label") ?? ReadString(item, "name") ?? ReadString(item, "id");
-                if (!string.IsNullOrWhiteSpace(label))
+                var id = ReadString(item, "id") ?? ReadString(item, "name") ?? ReadString(item, "label");
+                var label = ReadString(item, "label") ?? ReadString(item, "name") ?? id;
+                if (!string.IsNullOrWhiteSpace(id))
                 {
-                    servers.Add(CreateServer(label, item));
+                    servers.Add(CreateServer(id, label ?? id, item));
                 }
             }
 
@@ -94,7 +97,7 @@ internal sealed class McpCatalogService
         return element.TryGetProperty("command", out _) || element.TryGetProperty("url", out _) || element.TryGetProperty("transport", out _);
     }
 
-    private static McpServerDto CreateServer(string id, JsonElement server)
+    private static McpServerDto CreateServer(string id, string label, JsonElement server)
     {
         var description = ReadString(server, "description") ?? ReadString(server, "url") ?? ReadString(server, "command");
         var transport = ReadString(server, "transport");
@@ -104,7 +107,7 @@ internal sealed class McpCatalogService
             transport = server.TryGetProperty("url", out _) ? "url" : server.TryGetProperty("command", out _) ? "stdio" : null;
         }
 
-        return new McpServerDto(id, id, description, transport);
+        return new McpServerDto(id, label, description, transport);
     }
 
     private static string? ReadString(JsonElement element, string propertyName)

@@ -1,4 +1,5 @@
 artifacts/
+node_modules/
 src/MobileLmStudio/bin/
 src/MobileLmStudio/obj/
 src/MobileLmStudio/.vs/

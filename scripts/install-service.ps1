@@ -32,12 +32,27 @@ trap {
                 $failureMessage = $_.ToString()
             }
 
-            Set-Content -Path $resolvedFailurePath -Value $failureMessage -Encoding UTF8
+            Write-Utf8NoBomFile -Path $resolvedFailurePath -Value $failureMessage
         } catch {
         }
     }
 
     throw
+}
+
+function Write-Utf8NoBomFile {
+    param(
+        [string]$Path,
+        [string]$Value
+    )
+
+    $parent = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Value, $utf8NoBom)
 }
 
 function Read-SecretText {
@@ -60,13 +75,7 @@ function New-HashedPin {
 
     $saltBytes = New-Object byte[] 16
     [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($saltBytes)
-
-    try {
-        $deriver = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($PlainTextPin, $saltBytes, $Iterations, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
-    } catch {
-        throw "This PowerShell host cannot create a SHA256 PBKDF2 hash. Use PowerShell 7 or generate the hash with a newer .NET runtime."
-    }
-
+    $deriver = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($PlainTextPin, $saltBytes, $Iterations, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
     try {
         $hashBytes = $deriver.GetBytes(32)
     } finally {
@@ -94,18 +103,23 @@ function Resolve-SourcePath {
 function Resolve-ServiceCommand {
     param([string]$BasePath)
 
-    $exePath = Join-Path $BasePath "MobileLmStudio.exe"
-    if (Test-Path $exePath) {
-        return ('"{0}"' -f $exePath)
+    $nodePath = Join-Path $BasePath "node.exe"
+    if (-not (Test-Path $nodePath)) {
+        $nodeCommand = Get-Command node -ErrorAction Stop
+        $nodePath = $nodeCommand.Source
     }
 
-    $dllPath = Join-Path $BasePath "MobileLmStudio.dll"
-    if (Test-Path $dllPath) {
-        $dotnet = (Get-Command dotnet -ErrorAction Stop).Source
-        return ('"{0}" "{1}"' -f $dotnet, $dllPath)
+    $serverCandidates = @(
+        (Join-Path $BasePath "src\node\server.js"),
+        (Join-Path $BasePath "server.js")
+    )
+
+    $serverPath = $serverCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $serverPath) {
+        throw "Could not find the Node.js server entry point in $BasePath. Expected src\node\server.js."
     }
 
-    throw "Could not find MobileLmStudio.exe or MobileLmStudio.dll in $BasePath."
+    return ('"{0}" "{1}"' -f $nodePath, $serverPath)
 }
 
 function Get-ConnectionString {
@@ -180,31 +194,13 @@ function Get-PortUsageDescription {
 
         $processId = $listener.OwningProcess
         $processName = $null
-        $commandLine = $null
-
         try {
             $processName = (Get-Process -Id $processId -ErrorAction Stop).ProcessName
         } catch {
         }
 
-        try {
-            $commandLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction Stop).CommandLine
-        } catch {
-        }
-
-        $parts = @()
         if ($processName) {
-            $parts += ("{0} (PID {1})" -f $processName, $processId)
-        } elseif ($processId) {
-            $parts += ("PID {0}" -f $processId)
-        }
-
-        if (-not [string]::IsNullOrWhiteSpace($commandLine)) {
-            $parts += $commandLine
-        }
-
-        if ($parts.Count -gt 0) {
-            return ($parts -join ", ")
+            return ("{0} (PID {1})" -f $processName, $processId)
         }
     } catch {
     }
@@ -232,88 +228,54 @@ function Ensure-WebFirewallRule {
 
     $ruleName = "Mobile LM Studio Web UI ($Port)"
     $legacyRuleName = "Mobile LM Studio Web UI"
-    $netSecurityError = $null
-    $netshError = $null
-
-    if ((Get-Command Get-NetFirewallRule -ErrorAction SilentlyContinue) -and (Get-Command New-NetFirewallRule -ErrorAction SilentlyContinue)) {
-        try {
-            foreach ($name in @($legacyRuleName, $ruleName) | Select-Object -Unique) {
-                Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue |
-                    Remove-NetFirewallRule -ErrorAction SilentlyContinue
-            }
-
-            New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow -Enabled True -Profile Any -Protocol TCP -LocalPort $Port | Out-Null
-            return
-        } catch {
-            $netSecurityError = $_.Exception.Message
-        }
-    }
-
-    $netsh = Get-Command netsh.exe -ErrorAction SilentlyContinue
-    if ($netsh) {
-        try {
-            & $netsh.Source advfirewall firewall delete rule name="$legacyRuleName" protocol=TCP localport=$Port | Out-Null
-            & $netsh.Source advfirewall firewall delete rule name="$ruleName" protocol=TCP localport=$Port | Out-Null
-            & $netsh.Source advfirewall firewall add rule name="$ruleName" dir=in action=allow enable=yes profile=any protocol=TCP localport=$Port | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-                return
-            }
-
-            $netshError = "netsh exited with code $LASTEXITCODE"
-        } catch {
-            $netshError = $_.Exception.Message
-        }
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($netSecurityError) -and -not [string]::IsNullOrWhiteSpace($netshError)) {
-        throw "Unable to create the Windows Firewall rule '$ruleName' for TCP port $Port. PowerShell firewall error: $netSecurityError. netsh error: $netshError"
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($netSecurityError)) {
-        throw "Unable to create the Windows Firewall rule '$ruleName' for TCP port $Port. $netSecurityError"
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($netshError)) {
-        throw "Unable to create the Windows Firewall rule '$ruleName' for TCP port $Port. $netshError"
-    }
-
-    throw "Unable to create the Windows Firewall rule '$ruleName' for TCP port $Port."
-}
-
-function Get-RecentStartupFailureMessage {
-    param(
-        [string]$ProcessName = "MobileLmStudio.exe",
-        [int]$LookbackMinutes = 5
-    )
 
     try {
-        $events = Get-WinEvent -FilterHashtable @{
-            LogName = 'Application'
-            StartTime = (Get-Date).AddMinutes(-$LookbackMinutes)
-        } -ErrorAction SilentlyContinue |
-            Where-Object {
-                ($_.ProviderName -eq '.NET Runtime' -or $_.ProviderName -eq 'Application Error') -and
-                $_.Message -like ("*{0}*" -f $ProcessName)
-            } |
-            Select-Object -First 1
+        foreach ($name in @($legacyRuleName, $ruleName) | Select-Object -Unique) {
+            Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue |
+                Remove-NetFirewallRule -ErrorAction SilentlyContinue
+        }
 
-        if ($null -eq $events) {
+        New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow -Enabled True -Profile Any -Protocol TCP -LocalPort $Port | Out-Null
+        return
+    } catch {
+        $netsh = Get-Command netsh.exe -ErrorAction SilentlyContinue
+        if (-not $netsh) {
+            throw "Unable to create the Windows Firewall rule '$ruleName' for TCP port $Port. $($_.Exception.Message)"
+        }
+
+        & $netsh.Source advfirewall firewall delete rule name="$legacyRuleName" protocol=TCP localport=$Port | Out-Null
+        & $netsh.Source advfirewall firewall delete rule name="$ruleName" protocol=TCP localport=$Port | Out-Null
+        & $netsh.Source advfirewall firewall add rule name="$ruleName" dir=in action=allow enable=yes profile=any protocol=TCP localport=$Port | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Unable to create the Windows Firewall rule '$ruleName' for TCP port $Port. netsh exited with code $LASTEXITCODE."
+        }
+    }
+}
+
+function Get-LogDirectory {
+    return (Join-Path (Join-Path $env:ProgramData "MobileLmStudio") "logs")
+}
+
+function Get-LatestLogMessage {
+    param([string]$LogDirectory)
+
+    try {
+        $latestLog = Get-ChildItem -Path $LogDirectory -Filter *.log -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 1
+        if ($null -eq $latestLog) {
             return $null
         }
 
-        $match = [regex]::Match($events.Message, 'System\.[^\r\n]+')
-        if ($match.Success) {
-            return $match.Value.Trim()
+        $tail = Get-Content -Path $latestLog.FullName -Tail 20 -ErrorAction SilentlyContinue
+        if ($null -eq $tail) {
+            return $null
         }
 
-        $lines = $events.Message -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-        if ($lines.Count -gt 0) {
-            return $lines[0].Trim()
-        }
+        return (($tail | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) | Select-Object -Last 1)
     } catch {
+        return $null
     }
-
-    return $null
 }
 
 function Wait-ForServicePort {
@@ -322,16 +284,16 @@ function Wait-ForServicePort {
         [string]$ProbeHost,
         [int]$Port,
         [int]$TimeoutSeconds = 45,
-        [string]$ProcessName = "MobileLmStudio.exe"
+        [string]$LogDirectory
     )
 
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTimeOffset]::UtcNow -lt $deadline) {
         $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
         if (($null -eq $service) -or ($service.Status -eq [System.ServiceProcess.ServiceControllerStatus]::Stopped)) {
-            $failureMessage = Get-RecentStartupFailureMessage -ProcessName $ProcessName
+            $failureMessage = Get-LatestLogMessage -LogDirectory $LogDirectory
             if (-not [string]::IsNullOrWhiteSpace($failureMessage)) {
-                throw "Service '$ServiceName' stopped during startup. Latest failure: $failureMessage"
+                throw "Service '$ServiceName' stopped during startup. Latest log entry: $failureMessage"
             }
 
             throw "Service '$ServiceName' stopped during startup before opening port $Port."
@@ -352,12 +314,12 @@ function Wait-ForServicePort {
         Start-Sleep -Milliseconds 500
     }
 
-    $failureMessage = Get-RecentStartupFailureMessage -ProcessName $ProcessName
+    $failureMessage = Get-LatestLogMessage -LogDirectory $LogDirectory
     if (-not [string]::IsNullOrWhiteSpace($failureMessage)) {
-        throw "Service '$ServiceName' did not open port $Port within $TimeoutSeconds seconds. Latest failure: $failureMessage"
+        throw "Service '$ServiceName' did not open port $Port within $TimeoutSeconds seconds. Latest log entry: $failureMessage"
     }
 
-    throw "Service '$ServiceName' did not open port $Port within $TimeoutSeconds seconds. Check Windows Event Viewer for the underlying startup error."
+    throw "Service '$ServiceName' did not open port $Port within $TimeoutSeconds seconds. Check %PROGRAMDATA%\MobileLmStudio\logs for the underlying startup error."
 }
 
 function Write-AppSettings {
@@ -392,7 +354,7 @@ function Write-AppSettings {
     }
 
     $json = $settings | ConvertTo-Json -Depth 5
-    Set-Content -Path (Join-Path $TargetPath "appsettings.json") -Value $json -Encoding UTF8
+    Write-Utf8NoBomFile -Path (Join-Path $TargetPath "appsettings.json") -Value $json
 }
 
 function Get-RuntimeSettingsPath {
@@ -418,7 +380,7 @@ function Write-RuntimeSettings {
     }
 
     $json = $settings | ConvertTo-Json -Depth 3
-    Set-Content -Path $SettingsPath -Value $json -Encoding UTF8
+    Write-Utf8NoBomFile -Path $SettingsPath -Value $json
 }
 
 $resolvedInstallPath = [System.IO.Path]::GetFullPath($InstallPath)
@@ -479,7 +441,6 @@ if (-not $SkipCopy.IsPresent) {
 }
 
 $listenEndpoint = Get-ListenEndpoint -Url $ListenUrl
-
 $connectionString = Get-ConnectionString -DatabasePath $DataPath
 $pinPayload = if ([string]::IsNullOrWhiteSpace($Pin)) {
     $null
@@ -502,23 +463,24 @@ if ($service) {
     Assert-TcpPortAvailable -Port $listenEndpoint.Port
 
     & sc.exe config $ServiceName "start= auto" "binPath= $serviceCommand" | Out-Null
-    & sc.exe description $ServiceName "Mobile-first web client for LM Studio." | Out-Null
+    & sc.exe description $ServiceName "Mobile-first web client for LM Studio (Node.js runtime)." | Out-Null
 } else {
     Assert-TcpPortAvailable -Port $listenEndpoint.Port
 
-    New-Service -Name $ServiceName -BinaryPathName $serviceCommand -DisplayName "Mobile LM Studio" -Description "Mobile-first web client for LM Studio." -StartupType Automatic | Out-Null
+    New-Service -Name $ServiceName -BinaryPathName $serviceCommand -DisplayName "Mobile LM Studio" -Description "Mobile-first web client for LM Studio (Node.js runtime)." -StartupType Automatic | Out-Null
 }
 
 & sc.exe failure $ServiceName "reset= 86400" "actions= restart/5000/restart/5000/restart/15000" | Out-Null
 Ensure-WebFirewallRule -Port $listenEndpoint.Port
 Start-Service -Name $ServiceName
-Wait-ForServicePort -ServiceName $ServiceName -ProbeHost $listenEndpoint.Host -Port $listenEndpoint.Port -ProcessName "MobileLmStudio.exe"
+Wait-ForServicePort -ServiceName $ServiceName -ProbeHost $listenEndpoint.Host -Port $listenEndpoint.Port -LogDirectory (Get-LogDirectory)
 
 if (-not [string]::IsNullOrWhiteSpace($resolvedFailurePath) -and (Test-Path $resolvedFailurePath)) {
     Remove-Item -Path $resolvedFailurePath -Force
 }
 
 Write-Host "Installed Mobile LM Studio as service '$ServiceName'."
+Write-Host "Runtime: Node.js"
 Write-Host "Web URL: $ListenUrl"
 Write-Host "Windows Firewall: ensured inbound TCP rule for port $($listenEndpoint.Port)."
 Write-Host "Install path: $resolvedInstallPath"

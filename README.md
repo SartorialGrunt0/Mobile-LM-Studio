@@ -1,6 +1,6 @@
 # Mobile LM Studio
 
-Mobile LM Studio is a lightweight ASP.NET Core web client for LM Studio that is designed to run as a Windows service and be usable from a phone on the same network.
+Mobile LM Studio is a lightweight Node.js web client for LM Studio that is designed to run as a Windows service and be usable from a phone on the same network.
 
 ## Features
 
@@ -16,22 +16,30 @@ Mobile LM Studio is a lightweight ASP.NET Core web client for LM Studio that is 
 
 ## Project Layout
 
-- `src/MobileLmStudio`: ASP.NET Core app and static client
-- `scripts/publish.ps1`: publish script for a self-contained Windows build
-- `scripts/install-service.ps1`: copies published files, writes config, and registers the service
+- `src/node`: Node.js backend runtime, SQLite integration, and LM Studio proxy logic
+- `src/MobileLmStudio/wwwroot`: static mobile-first client assets served by the Node.js runtime
+- `src/MobileLmStudio/appsettings.json`: default application settings used by the Node.js runtime
+- `scripts/publish.ps1`: publish script for a portable Windows build that bundles `node.exe` and `node_modules`
+- `scripts/install-service.ps1`: copies published files, writes config, and registers the Windows service
 - `scripts/uninstall-service.ps1`: removes the Windows service
 - `installer/MobileLmStudio.iss`: optional Inno Setup packaging script
 - `reference/lm_studio_rest_api`: LM Studio API reference used to build the integration
 
 ## Build
 
-You need the .NET 9 SDK installed to build the app. The .NET runtime alone is not enough.
+You need Node.js installed to build or run the app from source.
+
+Install dependencies once:
+
+```powershell
+npm install
+```
 
 ```powershell
 ./scripts/publish.ps1 -SelfContained
 ```
 
-That publishes the app to `artifacts/publish/win-x64`. If Inno Setup is installed and `iscc` is on `PATH`, the same script also builds `artifacts/installer/MobileLmStudioSetup.exe`.
+That publishes the app to `artifacts/publish/win-x64`, including the Node.js server, static client assets, runtime `appsettings.json`, `node_modules`, and a portable `node.exe`. If Inno Setup is installed and `iscc` is on `PATH`, the same script also builds `artifacts/installer/MobileLmStudioSetup.exe`.
 
 To build the installer executable directly, use:
 
@@ -49,7 +57,7 @@ If you just want to see the UI without installing the Windows service, run:
 ./scripts/dev-server.ps1
 ```
 
-That starts the app directly from source on `http://127.0.0.1:5081` and stores chat data in `artifacts/dev/mobile-lm-studio.db` inside the repo. The non-service default avoids colliding with the installed Windows service on port `5080`.
+That starts the Node.js server directly from source on `http://127.0.0.1:5081` and stores chat data in `artifacts/dev/mobile-lm-studio.db` inside the repo. The script also isolates runtime settings under `artifacts/dev/programdata` so local iteration does not interfere with the installed Windows service on port `5080`.
 
 You can override the main dev settings:
 
@@ -57,7 +65,7 @@ You can override the main dev settings:
 ./scripts/dev-server.ps1 -Port 5090 -LmStudioUrl http://127.0.0.1:1234 -McpConfigPath C:\path\to\mcp.json
 ```
 
-This path still requires the .NET 9 SDK because it uses `dotnet run`.
+This path does not require .NET; it runs the Node.js server directly.
 
 When you run the setup executable, the install wizard lets you choose:
 
@@ -105,6 +113,10 @@ The generated `appsettings.json` contains:
 Runtime changes made in the UI are also persisted to `%PROGRAMDATA%\MobileLmStudio\appsettings.runtime.json` so the service keeps the latest LM Studio base URL, API token, MCP config path, and PIN requirement across restarts.
 
 Service diagnostics are written to `%PROGRAMDATA%\MobileLmStudio\logs\YYYYMMDD.log`.
+
+## Migration Note
+
+The runtime scripts and installer now target the Node.js backend in `src/node`. The older .NET host sources remain in the repo temporarily as migration reference, but `scripts/dev-server.ps1`, `scripts/publish.ps1`, and `scripts/install-service.ps1` all use the Node.js runtime path.
 
 ## Uninstall
 

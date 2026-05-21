@@ -858,8 +858,9 @@ body.drawer-open .drawer-backdrop {
 
 .composer-field textarea {
   min-height: 3rem;
-  max-height: 18rem;
+  max-height: 8.75rem;
   resize: none;
+  overflow-y: hidden;
 }
 
 .send-button {

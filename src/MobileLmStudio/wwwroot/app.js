@@ -124,10 +124,11 @@ function bindEvents() {
   });
   elements.themeButton.addEventListener("click", () => toggleTheme());
   elements.newChatButton.addEventListener("click", () => {
-    startNewDraft();
+    startNewDraft({ resetConversationSettings: true });
+    clearComposerDraft();
+    setStatus("Ready", "neutral");
     render();
     syncMessageScroll(true);
-    autoResizeComposer();
     setDrawerOpen(false);
   });
   elements.configBannerDismiss?.addEventListener("click", () => dismissConfigBanner());
@@ -319,7 +320,8 @@ async function loadAuthenticatedData() {
       await openChat(state.currentChatId, true);
     } catch (error) {
       warnings.push(error.message || "Unable to open the current chat.");
-      startNewDraft();
+      startNewDraft({ resetConversationSettings: true });
+      clearComposerDraft();
       render();
     }
   } else if (state.chats.length > 0) {
@@ -327,11 +329,13 @@ async function loadAuthenticatedData() {
       await openChat(state.chats[0].id, true);
     } catch (error) {
       warnings.push(error.message || "Unable to open the latest chat.");
-      startNewDraft();
+      startNewDraft({ resetConversationSettings: true });
+      clearComposerDraft();
       render();
     }
   } else {
-    startNewDraft();
+    startNewDraft({ resetConversationSettings: true });
+    clearComposerDraft();
     render();
   }
 
@@ -409,9 +413,14 @@ function ensureSelectionDefaults() {
   normalizeReasoningSelection();
 }
 
-function startNewDraft() {
+function startNewDraft(options = {}) {
+  const { resetConversationSettings = false } = options;
   ensureSelectionDefaults();
+  if (resetConversationSettings) {
+    resetDraftConversationState();
+  }
   state.currentChatId = null;
+  state.pendingStreamRecoveryChatId = null;
   state.stickToBottom = true;
   state.currentChat = {
     id: null,
@@ -426,17 +435,33 @@ function startNewDraft() {
   };
 }
 
+function resetDraftConversationState() {
+  state.systemPrompt = "";
+  state.selectedReasoning = "default";
+  state.selectedContextLength = String(suggestContextLength(findSelectedModel()));
+  state.selectedTemperature = "";
+  state.selectedMcpServerIds = new Set();
+}
+
+function clearComposerDraft() {
+  elements.messageInput.value = "";
+  elements.messageInput.style.overflowY = "hidden";
+  state.composerAttachments = [];
+  renderComposerAttachments();
+  autoResizeComposer();
+}
+
 async function openChat(chatId, suppressStatus = false) {
   try {
     state.currentChat = await fetchJson(`/api/chats/${encodeURIComponent(chatId)}`);
     state.currentChatId = state.currentChat.id;
     const loadedModel = state.models.find(model => (model.loadedInstances || []).length > 0);
-    state.selectedModel = loadedModel?.key || state.currentChat.modelKey || state.selectedModel;
+    state.selectedModel = state.currentChat.modelKey || loadedModel?.key || state.selectedModel;
     state.systemPrompt = state.currentChat.systemPrompt || "";
     state.selectedReasoning = state.currentChat.reasoning || "default";
     state.selectedContextLength = state.currentChat.contextLength ? String(state.currentChat.contextLength) : String(suggestContextLength(findSelectedModel()));
     state.selectedTemperature = typeof state.currentChat.temperature === "number" ? String(state.currentChat.temperature) : "";
-    state.selectedMcpServerIds = new Set(state.currentChat.selectedMcpServerIds || []);
+    state.selectedMcpServerIds = normalizeSelectedMcpServerIds(state.currentChat.selectedMcpServerIds || []);
     state.stickToBottom = true;
     normalizeReasoningSelection();
     render();
@@ -582,7 +607,7 @@ async function sendMessage() {
     reasoning: normalizeReasoningValue(),
     contextLength: parseOptionalNumber(state.selectedContextLength),
     temperature: parseOptionalFloat(state.selectedTemperature),
-    mcpServerIds: Array.from(state.selectedMcpServerIds),
+    mcpServerIds: Array.from(normalizeSelectedMcpServerIds(Array.from(state.selectedMcpServerIds))),
     attachments,
   };
 
@@ -712,11 +737,11 @@ function applyStreamEvent(event, pendingAssistant) {
       break;
     case "reasoning.delta":
       pendingAssistant.reasoning = `${pendingAssistant.reasoning || ""}${event.data.content || ""}`;
-      renderMessages();
+      renderMessages(true);
       break;
     case "message.delta":
       pendingAssistant.content = `${pendingAssistant.content || ""}${event.data.content || ""}`;
-      renderMessages();
+      renderMessages(true);
       break;
     case "tool_call.start":
       pendingAssistant.toolCalls.push({
@@ -725,14 +750,14 @@ function applyStreamEvent(event, pendingAssistant) {
         output: "",
         provider: event.data.providerInfo || null,
       });
-      renderMessages();
+      renderMessages(true);
       break;
     case "tool_call.arguments": {
       const currentTool = pendingAssistant.toolCalls[pendingAssistant.toolCalls.length - 1];
       if (currentTool) {
         currentTool.argumentsJson = JSON.stringify(event.data.arguments || {}, null, 2);
       }
-      renderMessages();
+      renderMessages(true);
       break;
     }
     case "tool_call.success": {
@@ -740,7 +765,7 @@ function applyStreamEvent(event, pendingAssistant) {
       if (currentTool) {
         currentTool.output = event.data.output || "";
       }
-      renderMessages();
+      renderMessages(true);
       break;
     }
     case "tool_call.failure":
@@ -748,11 +773,11 @@ function applyStreamEvent(event, pendingAssistant) {
         reason: "Tool call failed",
         metadataJson: JSON.stringify(event.data, null, 2),
       });
-      renderMessages();
+      renderMessages(true);
       break;
     case "chat.end":
       applyFinalResponse(pendingAssistant, event.data);
-      renderMessages();
+      renderMessages(true);
       break;
     case "error":
       throw new Error(event.data.message || "The LM Studio stream returned an error.");
@@ -1028,9 +1053,10 @@ function renderChatList() {
 function renderMessages(forceScroll = false) {
   const messages = state.currentChat?.messages || [];
   const hasMessages = messages.length > 0;
+  const shouldStick = forceScroll || state.stickToBottom || isMessageScrollNearBottom();
   elements.emptyState.hidden = hasMessages;
   elements.messageList.innerHTML = hasMessages ? messages.map(renderMessageCard).join("") : "";
-  syncMessageScroll(forceScroll || state.isSending);
+  syncMessageScroll(shouldStick);
 
   // Update context meter in composer (bug #1)
   if (elements.composerContextMeter) {
@@ -1176,6 +1202,21 @@ function getLoadedModels(excludeKey = "") {
   return state.models.filter(model => model.key !== excludeKey && (model.loadedInstances || []).length > 0);
 }
 
+function normalizeSelectedMcpServerIds(serverIds) {
+  const normalizedIds = new Set();
+
+  for (const serverId of serverIds || []) {
+    if (!serverId) {
+      continue;
+    }
+
+    const matchingServer = state.mcpServers.find(server => server.id === serverId || server.label === serverId);
+    normalizedIds.add(matchingServer?.id || serverId);
+  }
+
+  return normalizedIds;
+}
+
 function findSelectedModel() {
   return state.models.find(model => model.key === state.selectedModel) || null;
 }
@@ -1296,8 +1337,11 @@ async function readError(response) {
 }
 
 function autoResizeComposer() {
+  const maxComposerHeight = 140;
   elements.messageInput.style.height = "auto";
-  elements.messageInput.style.height = `${elements.messageInput.scrollHeight}px`;
+  const nextHeight = Math.min(Math.max(elements.messageInput.scrollHeight, 48), maxComposerHeight);
+  elements.messageInput.style.height = `${nextHeight}px`;
+  elements.messageInput.style.overflowY = elements.messageInput.scrollHeight > maxComposerHeight ? "auto" : "hidden";
 }
 
 function parseOptionalNumber(value) {
@@ -1443,8 +1487,8 @@ function renderMessageAttachment(attachment) {
 }
 
 function renderContextMeter(message) {
-  const limit = message.stats?.contextLimit;
-  const used = message.stats?.inputTokens;
+  const limit = message?.stats?.contextLimit;
+  const used = message?.stats?.inputTokens;
   if (!limit || !used) {
     return "";
   }
@@ -1544,7 +1588,8 @@ async function deleteChat(chatId) {
       if (state.chats.length > 0) {
         await openChat(state.chats[0].id, true);
       } else {
-        startNewDraft();
+        startNewDraft({ resetConversationSettings: true });
+        clearComposerDraft();
         render();
       }
     } else {
@@ -2140,17 +2185,23 @@ function saveBannerDismissal(value) {
   }
 }
 
-function updateStickToBottom() {
+function isMessageScrollNearBottom() {
   const remaining = elements.messageScroll.scrollHeight - elements.messageScroll.scrollTop - elements.messageScroll.clientHeight;
-  state.stickToBottom = remaining <= 72;
+  return remaining <= 72;
+}
+
+function updateStickToBottom() {
+  state.stickToBottom = isMessageScrollNearBottom();
 }
 
 function syncMessageScroll(force = false) {
-  if (!force && !state.stickToBottom) {
+  if (!force && !state.stickToBottom && !isMessageScrollNearBottom()) {
     return;
   }
 
   requestAnimationFrame(() => {
+    const lastMessage = elements.messageList.lastElementChild;
+    lastMessage?.scrollIntoView({ block: "end" });
     elements.messageScroll.scrollTop = elements.messageScroll.scrollHeight;
     state.stickToBottom = true;
   });
