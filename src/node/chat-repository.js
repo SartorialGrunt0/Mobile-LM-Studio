@@ -354,6 +354,41 @@ ORDER BY created_utc ASC;
 
     return rows.map(mapMessage);
   }
+
+  truncateFromMessage(chatId, messageId) {
+    return this.db.transaction(() => {
+      const allMessages = this.db.prepare(`
+SELECT rowid, id, role, response_id FROM messages
+WHERE chat_id = ? ORDER BY created_utc ASC, rowid ASC;
+`).all(chatId);
+
+      const targetIndex = allMessages.findIndex(m => m.id === messageId);
+      if (targetIndex === -1) {
+        return null;
+      }
+
+      let previousResponseId = null;
+      for (let i = targetIndex - 1; i >= 0; i--) {
+        if (String(allMessages[i].role).toLowerCase() === "assistant") {
+          previousResponseId = allMessages[i].response_id || null;
+          break;
+        }
+      }
+
+      const targetRowid = allMessages[targetIndex].rowid;
+      this.db.prepare(`DELETE FROM messages WHERE chat_id = ? AND rowid >= ?;`).run(chatId, targetRowid);
+
+      const latestAssistant = this.db.prepare(`
+SELECT response_id FROM messages WHERE chat_id = ? AND role = 'assistant'
+ORDER BY created_utc DESC, rowid DESC LIMIT 1;
+`).get(chatId);
+
+      this.db.prepare(`UPDATE chats SET last_response_id = ?, updated_utc = ? WHERE id = ?;`)
+        .run(latestAssistant?.response_id || null, nowIso(), chatId);
+
+      return previousResponseId;
+    })();
+  }
 }
 
 function ensureColumn(db, tableName, columnName, columnDefinition) {

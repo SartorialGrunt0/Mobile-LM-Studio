@@ -22,9 +22,14 @@ const state = {
   confirmDialog: null,
   pendingStreamRecoveryChatId: null,
   stickToBottom: true,
+  editingMessageId: null,
+  editDraftContent: "",
+  chatFontScale: 1,
+  topBarActionsExpanded: false,
 };
 
 const elements = {
+  topBar: document.querySelector(".top-bar"),
   chatDrawer: document.getElementById("chat-drawer"),
   drawerBackdrop: document.getElementById("drawer-backdrop"),
   drawerToggle: document.getElementById("drawer-toggle"),
@@ -32,6 +37,8 @@ const elements = {
   chatList: document.getElementById("chat-list"),
   newChatButton: document.getElementById("new-chat-button"),
   connectionPill: document.getElementById("connection-pill"),
+  topBarActions: document.getElementById("top-bar-actions"),
+  topActionsToggle: document.getElementById("top-actions-toggle"),
   modelButton: document.getElementById("model-button"),
   themeButton: document.getElementById("theme-button"),
   settingsButton: document.getElementById("settings-button"),
@@ -69,11 +76,16 @@ const elements = {
   loginError: document.getElementById("login-error"),
   modelScreen: document.getElementById("model-screen"),
   modelCloseButton: document.getElementById("model-close-button"),
+  modelRefreshButton: document.getElementById("model-refresh-button"),
   settingsScreen: document.getElementById("settings-screen"),
   settingsForm: document.getElementById("settings-form"),
   settingsBaseUrl: document.getElementById("settings-base-url"),
   settingsApiToken: document.getElementById("settings-api-token"),
   settingsMcpPath: document.getElementById("settings-mcp-path"),
+  settingsMcpUpload: document.getElementById("settings-mcp-upload"),
+  settingsMcpUploadButton: document.getElementById("settings-mcp-upload-button"),
+  settingsMcpUploadName: document.getElementById("settings-mcp-upload-name"),
+  settingsChatFontScale: document.getElementById("settings-chat-font-scale"),
   settingsRequireLogin: document.getElementById("settings-require-login"),
   settingsPin: document.getElementById("settings-pin"),
   settingsPinHint: document.getElementById("settings-pin-hint"),
@@ -86,6 +98,8 @@ const elements = {
   confirmAcceptButton: document.getElementById("confirm-accept-button"),
   confirmCancelButton: document.getElementById("confirm-cancel-button"),
 };
+
+const desktopLayoutMedia = window.matchMedia("(min-width: 960px)");
 
 applyTheme(loadThemePreference());
 renderActionIcons();
@@ -112,18 +126,52 @@ async function initialize() {
 }
 
 function bindEvents() {
-  elements.drawerToggle.addEventListener("click", () => setDrawerOpen(true));
+  elements.drawerToggle.addEventListener("click", () => {
+    collapseTopBarActions();
+    setDrawerOpen(true);
+  });
   elements.drawerClose.addEventListener("click", () => setDrawerOpen(false));
   elements.drawerBackdrop.addEventListener("click", () => setDrawerOpen(false));
-  elements.modelButton.addEventListener("click", () => openModelMenu());
+  elements.topActionsToggle?.addEventListener("click", event => {
+    event.stopPropagation();
+    toggleTopBarActions();
+  });
+  elements.topBarActions?.addEventListener("click", event => {
+    event.stopPropagation();
+  });
+  if (typeof desktopLayoutMedia.addEventListener === "function") {
+    desktopLayoutMedia.addEventListener("change", syncTopBarActionsLayout);
+  } else if (typeof desktopLayoutMedia.addListener === "function") {
+    desktopLayoutMedia.addListener(syncTopBarActionsLayout);
+  }
+  document.addEventListener("click", event => {
+    if (!state.topBarActionsExpanded || isDesktopLayout()) {
+      return;
+    }
+
+    if (elements.topBar?.contains(event.target) || elements.topBarActions?.contains(event.target)) {
+      return;
+    }
+
+    collapseTopBarActions();
+  });
+
+  elements.modelButton.addEventListener("click", () => {
+    collapseTopBarActions();
+    openModelMenu();
+  });
   elements.modelCloseButton.addEventListener("click", () => closeModelMenu());
   elements.modelScreen.addEventListener("click", event => {
     if (event.target === elements.modelScreen) {
       closeModelMenu();
     }
   });
-  elements.themeButton.addEventListener("click", () => toggleTheme());
+  elements.themeButton.addEventListener("click", () => {
+    collapseTopBarActions();
+    toggleTheme();
+  });
   elements.newChatButton.addEventListener("click", () => {
+    collapseTopBarActions();
     startNewDraft({ resetConversationSettings: true });
     clearComposerDraft();
     setStatus("Ready", "neutral");
@@ -170,6 +218,26 @@ function bindEvents() {
     const exportButton = event.target.closest("button[data-export-message-id]");
     if (exportButton?.dataset.exportMessageId) {
       void exportMessage(exportButton.dataset.exportMessageId);
+      return;
+    }
+
+    const editButton = event.target.closest("button[data-edit-message-id]");
+    if (editButton?.dataset.editMessageId) {
+      startEditMessage(editButton.dataset.editMessageId);
+      return;
+    }
+
+    const cancelEditButton = event.target.closest("button[data-cancel-edit]");
+    if (cancelEditButton) {
+      cancelEditMessage();
+      return;
+    }
+
+    const saveEditButton = event.target.closest("button[data-save-edit]");
+    if (saveEditButton) {
+      const textarea = elements.messageList.querySelector(".message-edit-textarea");
+      const content = textarea ? textarea.value.trim() : state.editDraftContent.trim();
+      void saveAndRegenerateMessage(state.editingMessageId, content);
       return;
     }
   });
@@ -237,6 +305,8 @@ function bindEvents() {
     void addComposerAttachments(event.target.files, "file");
     event.target.value = "";
   });
+  elements.settingsMcpUploadButton?.addEventListener("click", () => elements.settingsMcpUpload?.click());
+  elements.settingsMcpUpload?.addEventListener("change", () => renderSelectedMcpConfigLabel());
 
   elements.messageInput.addEventListener("input", autoResizeComposer);
   elements.messageInput.addEventListener("keydown", event => {
@@ -248,9 +318,19 @@ function bindEvents() {
 
   elements.loadModelButton.addEventListener("click", () => void loadSelectedModel());
   elements.unloadModelButton.addEventListener("click", () => void unloadSelectedModel());
-  elements.exportChatButton.addEventListener("click", () => void exportCurrentChat());
-  elements.deleteChatButton.addEventListener("click", () => promptDeleteChat(state.currentChatId));
-  elements.logoutButton.addEventListener("click", () => void logout());
+  elements.modelRefreshButton?.addEventListener("click", () => void refreshModels());
+  elements.exportChatButton.addEventListener("click", () => {
+    collapseTopBarActions();
+    void exportCurrentChat();
+  });
+  elements.deleteChatButton.addEventListener("click", () => {
+    collapseTopBarActions();
+    promptDeleteChat(state.currentChatId);
+  });
+  elements.logoutButton.addEventListener("click", () => {
+    collapseTopBarActions();
+    void logout();
+  });
 
   elements.loginForm.addEventListener("submit", event => {
     event.preventDefault();
@@ -269,7 +349,10 @@ function bindEvents() {
   });
   elements.settingsRequireLogin?.addEventListener("change", () => renderSettingsSecurityState());
 
-  elements.settingsButton.addEventListener("click", () => openSettings());
+  elements.settingsButton.addEventListener("click", () => {
+    collapseTopBarActions();
+    openSettings();
+  });
   elements.confirmCancelButton?.addEventListener("click", () => closeConfirmDialog());
   elements.confirmAcceptButton?.addEventListener("click", () => void confirmPendingAction());
   elements.confirmScreen?.addEventListener("click", event => {
@@ -281,6 +364,8 @@ function bindEvents() {
 
 async function refreshBootstrap() {
   state.bootstrap = await fetchJson("/api/bootstrap", { suppressAuthRedirect: true });
+  state.chatFontScale = normalizeChatFontScale(state.bootstrap?.chatFontScale);
+  applyChatFontScale(state.chatFontScale);
 }
 
 async function loadAuthenticatedData() {
@@ -705,6 +790,7 @@ async function sendMessage() {
     }
 
     pendingAssistant.content = describeStreamFailure(error);
+    pendingAssistant.isError = !looksLikeTransientStreamFailure(error);
     pendingAssistant.pending = false;
     setStatus(error.message || "The request failed.", "error");
     renderMessages();
@@ -780,7 +866,7 @@ function applyStreamEvent(event, pendingAssistant) {
       renderMessages(true);
       break;
     case "error":
-      throw new Error(event.data.message || "The LM Studio stream returned an error.");
+      throw new Error(describeLmStudioError(event.data?.message || "The LM Studio stream returned an error."));
     default:
       break;
   }
@@ -850,6 +936,7 @@ function render() {
   renderBanner();
   renderControls();
   renderChatToolbar();
+  renderTopBarActions();
   renderChatList();
   renderMessages();
   renderComposerAttachments();
@@ -876,7 +963,7 @@ function renderBanner() {
     warnings.push("Set the LM Studio base URL before using the chat or model controls.");
   }
   if (!state.bootstrap.mcpConfigured) {
-    warnings.push("Set LmStudio:McpConfigPath to list MCP servers inside the client.");
+    warnings.push("Set or upload an MCP config to list MCP servers inside the client.");
   }
   if (!state.bootstrap.hasApiToken) {
     warnings.push("Set the LM Studio API token if you want plugin-based MCP tools available in chat.");
@@ -933,6 +1020,21 @@ function renderChatToolbar() {
   elements.exportChatButton.disabled = !hasSavedChat;
   elements.deleteChatButton.disabled = !hasSavedChat;
   elements.chatToolbar?.classList.toggle("is-draft", !hasSavedChat);
+}
+
+function renderTopBarActions() {
+  const expanded = !isDesktopLayout() && state.topBarActionsExpanded;
+  elements.topBar?.classList.toggle("actions-expanded", expanded);
+
+  if (!elements.topActionsToggle) {
+    return;
+  }
+
+  const label = expanded ? "Hide top actions" : "Show top actions";
+  setButtonIcon(elements.topActionsToggle, expanded ? "chevronUp" : "chevronDown");
+  elements.topActionsToggle.title = label;
+  elements.topActionsToggle.setAttribute("aria-label", label);
+  elements.topActionsToggle.setAttribute("aria-expanded", expanded ? "true" : "false");
 }
 
 function renderModelOptions() {
@@ -1015,7 +1117,7 @@ function renderModelDetails() {
 
 function renderMcpServers() {
   if (state.mcpServers.length === 0) {
-    elements.mcpList.innerHTML = '<p class="chat-preview">No MCP servers were found at the configured mcp.json path.</p>';
+    elements.mcpList.innerHTML = '<p class="chat-preview">No MCP servers were found in the configured or uploaded mcp.json file.</p>';
     return;
   }
 
@@ -1054,11 +1156,30 @@ function renderMessages(forceScroll = false) {
   const messages = state.currentChat?.messages || [];
   const hasMessages = messages.length > 0;
   const shouldStick = forceScroll || state.stickToBottom || isMessageScrollNearBottom();
+
+  if (state.editingMessageId) {
+    const editTextarea = elements.messageList.querySelector(".message-edit-textarea");
+    if (editTextarea) {
+      state.editDraftContent = editTextarea.value;
+    }
+  }
+
+  const openDetailsStates = captureOpenDetails();
+  elements.messageScroll.classList.toggle("empty", !hasMessages);
   elements.emptyState.hidden = hasMessages;
   elements.messageList.innerHTML = hasMessages ? messages.map(renderMessageCard).join("") : "";
+  restoreOpenDetails(openDetailsStates);
+
+  if (state.editingMessageId) {
+    const editTextarea = elements.messageList.querySelector(".message-edit-textarea");
+    if (editTextarea) {
+      editTextarea.value = state.editDraftContent;
+    }
+  }
+
   syncMessageScroll(shouldStick);
 
-  // Update context meter in composer (bug #1)
+  // Update context meter in composer
   if (elements.composerContextMeter) {
     const latestWithStats = [...messages].reverse().find(m => m.role === "assistant" && m.stats);
     const meterHtml = renderContextMeter(latestWithStats || null);
@@ -1070,19 +1191,44 @@ function renderMessages(forceScroll = false) {
 function renderStatus() {
   elements.statusBar.dataset.tone = state.statusTone;
   elements.statusBar.textContent = state.statusText;
+  elements.statusBar.title = state.statusText;
 }
 
 function renderMessageCard(message) {
   const roleLabel = message.role === "user" ? "You" : resolveAssistantLabel(message);
-  const contentBlock = message.content
-    ? `<div class="message-body markdown-body">${renderMarkdown(message.content)}</div>`
-    : message.pending
-      ? '<div class="message-body">Waiting for tokens...</div>'
+
+  if (state.editingMessageId === message.id) {
+    const attachmentsBlock = message.attachments?.length
+      ? `<div class="attachment-list">${message.attachments.map(renderMessageAttachment).join("")}</div>`
       : "";
+    return `
+    <article class="message-card user">
+      <div class="message-head">
+        <span class="message-role">${escapeHtml(roleLabel)}</span>
+        <time class="message-time">${escapeHtml(formatClock(message.createdAt))}</time>
+      </div>
+      ${attachmentsBlock}
+      <div class="message-edit-form">
+        <textarea class="message-edit-textarea" rows="3" autocorrect="off" autocapitalize="sentences" spellcheck="false"></textarea>
+        <div class="message-edit-actions">
+          <button type="button" class="primary-button" data-save-edit>Save and Regenerate</button>
+          <button type="button" class="ghost-button" data-cancel-edit>Cancel</button>
+        </div>
+      </div>
+    </article>`;
+  }
+
+  const contentBlock = message.isError
+    ? `<div class="message-error">${escapeHtml(message.content || "An error occurred.")}</div>`
+    : message.content
+      ? `<div class="message-body markdown-body">${renderMarkdown(message.content)}</div>`
+      : message.pending
+        ? '<div class="message-body">Waiting for tokens...</div>'
+        : "";
 
   const reasoningBlock = message.reasoning
     ? `
-      <details class="details-block">
+      <details class="details-block" data-details-id="${escapeAttribute(message.id)}-reasoning">
         <summary>Thinking</summary>
         <div class="details-body markdown-body">${renderMarkdown(message.reasoning)}</div>
       </details>`
@@ -1097,7 +1243,7 @@ function renderMessageCard(message) {
 
   const toolCallsBlock = message.toolCalls?.length
     ? `
-      <details class="details-block">
+      <details class="details-block" data-details-id="${escapeAttribute(message.id)}-tools">
         <summary>Tools Used (${message.toolCalls.length})</summary>
         ${message.toolCalls.map(renderToolCall).join("")}
       </details>`
@@ -1105,7 +1251,7 @@ function renderMessageCard(message) {
 
   const invalidToolCallsBlock = message.invalidToolCalls?.length
     ? `
-      <details class="details-block">
+      <details class="details-block" data-details-id="${escapeAttribute(message.id)}-errors">
         <summary>Tool Errors (${message.invalidToolCalls.length})</summary>
         ${message.invalidToolCalls.map(renderInvalidToolCall).join("")}
       </details>`
@@ -1126,10 +1272,12 @@ function renderMessageCard(message) {
   const contextBlock = "";
   const canExport = Boolean(state.currentChatId) && !message.pending;
   const canRetry = Boolean(state.currentChatId) && !message.pending && message.role === "assistant" && isLatestAssistantMessage(message);
-  const actionsBlock = canExport || canRetry
+  const canEdit = Boolean(state.currentChatId) && !message.pending && message.role === "user" && !state.isSending && !state.editingMessageId;
+  const actionsBlock = canExport || canRetry || canEdit
     ? `
       <div class="message-actions">
-        ${canRetry ? '<button type="button" class="ghost-button message-action-button" data-retry-chat="true">Retry Prompt</button>' : ""}
+        ${canRetry ? `<button type="button" class="ghost-button icon-button message-action-icon" data-retry-chat="true" aria-label="Retry prompt" title="Retry prompt">${renderIcon("retry")}</button>` : ""}
+        ${canEdit ? `<button type="button" class="ghost-button icon-button message-action-icon" data-edit-message-id="${escapeAttribute(message.id)}" aria-label="Edit message" title="Edit message">${renderIcon("pencil")}</button>` : ""}
         ${canExport ? `<button type="button" class="ghost-button icon-button message-action-icon" data-export-message-id="${escapeAttribute(message.id)}" aria-label="Export Markdown" title="Export Markdown">${renderIcon("download")}</button>` : ""}
       </div>`
     : "";
@@ -1330,6 +1478,12 @@ async function readError(response) {
   const contentType = response.headers.get("content-type") || "";
   if (contentType.includes("json")) {
     const payload = await response.json();
+    if (payload.errors && typeof payload.errors === "object") {
+      const firstError = Object.values(payload.errors).find(value => Array.isArray(value) && value.length > 0);
+      if (firstError) {
+        return firstError[0];
+      }
+    }
     return payload.detail || payload.error || payload.title || "The request failed.";
   }
 
@@ -1337,9 +1491,9 @@ async function readError(response) {
 }
 
 function autoResizeComposer() {
-  const maxComposerHeight = 140;
+  const maxComposerHeight = 124;
   elements.messageInput.style.height = "auto";
-  const nextHeight = Math.min(Math.max(elements.messageInput.scrollHeight, 48), maxComposerHeight);
+  const nextHeight = Math.min(Math.max(elements.messageInput.scrollHeight, 38), maxComposerHeight);
   elements.messageInput.style.height = `${nextHeight}px`;
   elements.messageInput.style.overflowY = elements.messageInput.scrollHeight > maxComposerHeight ? "auto" : "hidden";
 }
@@ -1724,6 +1878,7 @@ async function retryLatestPrompt() {
     }
 
     pendingAssistant.content = describeStreamFailure(error, "Unable to retry the latest prompt.");
+    pendingAssistant.isError = !looksLikeTransientStreamFailure(error);
     pendingAssistant.pending = false;
     setStatus(error.message || "Unable to retry the latest prompt.", "error");
     renderMessages();
@@ -1855,226 +2010,458 @@ function formatBytes(value) {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-  function renderMarkdown(value) {
-    const normalized = sanitizeMarkdownSource(String(value || "")).replace(/\r/g, "");
-    if (!normalized.trim()) {
-      return "";
+function captureOpenDetails() {
+  const states = new Map();
+  elements.messageList.querySelectorAll("details[data-details-id]").forEach(detail => {
+    states.set(detail.dataset.detailsId, detail.open);
+  });
+  return states;
+}
+
+function restoreOpenDetails(states) {
+  elements.messageList.querySelectorAll("details[data-details-id]").forEach(detail => {
+    const key = detail.dataset.detailsId;
+    if (states.has(key)) {
+      detail.open = states.get(key);
+    }
+  });
+}
+
+function describeLmStudioError(message) {
+  const msg = String(message || "").toLowerCase();
+  if (msg.includes("no model") || msg.includes("model not loaded") || msg.includes("no loaded model") || msg.includes("no model is currently loaded")) {
+    return "No model is loaded in LM Studio. Open Model Controls and load a model first.";
+  }
+  if (msg.includes("context") && (msg.includes("exceeded") || msg.includes("too long") || msg.includes("length"))) {
+    return "The conversation exceeded the model's context window. Try reducing the context length or starting a new chat.";
+  }
+  return message || "LM Studio returned an error.";
+}
+
+function startEditMessage(messageId) {
+  if (state.isSending || !state.currentChatId) {
+    return;
+  }
+  const message = state.currentChat?.messages?.find(m => m.id === messageId);
+  if (!message || message.role !== "user") {
+    return;
+  }
+  state.editingMessageId = messageId;
+  state.editDraftContent = message.content || "";
+  renderMessages();
+  requestAnimationFrame(() => {
+    const editTextarea = elements.messageList.querySelector(".message-edit-textarea");
+    if (editTextarea) {
+      editTextarea.value = state.editDraftContent;
+      editTextarea.focus();
+      editTextarea.selectionStart = editTextarea.value.length;
+      editTextarea.selectionEnd = editTextarea.value.length;
+    }
+  });
+}
+
+function cancelEditMessage() {
+  state.editingMessageId = null;
+  state.editDraftContent = "";
+  renderMessages();
+}
+
+async function saveAndRegenerateMessage(messageId, newContent) {
+  if (state.isSending || !state.currentChatId || !messageId) {
+    return;
+  }
+  if (!newContent.trim()) {
+    setStatus("Cannot save an empty message.", "error");
+    return;
+  }
+
+  const messages = state.currentChat?.messages || [];
+  const targetIndex = messages.findIndex(m => m.id === messageId);
+  if (targetIndex === -1) {
+    return;
+  }
+
+  const requestBody = {
+    chatId: state.currentChatId,
+    model: state.selectedModel,
+    input: newContent.trim(),
+    systemPrompt: state.systemPrompt.trim() || null,
+    reasoning: normalizeReasoningValue(),
+    contextLength: parseOptionalNumber(state.selectedContextLength),
+    temperature: parseOptionalFloat(state.selectedTemperature),
+    mcpServerIds: Array.from(normalizeSelectedMcpServerIds(Array.from(state.selectedMcpServerIds))),
+    attachments: [],
+  };
+
+  const pendingAssistant = {
+    id: `edit_${Date.now()}`,
+    role: "assistant",
+    content: "",
+    reasoning: "",
+    toolCalls: [],
+    invalidToolCalls: [],
+    attachments: [],
+    modelKey: state.selectedModel,
+    stats: null,
+    createdAt: new Date().toISOString(),
+    pending: true,
+  };
+
+  state.currentChat.messages = messages.slice(0, targetIndex);
+  state.currentChat.messages.push({
+    id: `local_edit_${Date.now()}`,
+    role: "user",
+    content: newContent.trim(),
+    reasoning: null,
+    toolCalls: [],
+    invalidToolCalls: [],
+    attachments: [],
+    modelKey: state.selectedModel,
+    stats: null,
+    createdAt: new Date().toISOString(),
+  });
+  state.currentChat.messages.push(pendingAssistant);
+
+  state.editingMessageId = null;
+  state.editDraftContent = "";
+  state.isSending = true;
+  state.stickToBottom = true;
+  const expectedMessageCount = state.currentChat.messages.length;
+  setStatus("Applying edit and regenerating...", "busy");
+  render();
+
+  try {
+    const response = await fetch(
+      `/api/chats/${encodeURIComponent(state.currentChatId)}/messages/${encodeURIComponent(messageId)}/edit-stream`,
+      {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestBody),
+      }
+    );
+
+    if (response.status === 401) {
+      await handleUnauthorized();
+      throw new Error("Authentication required.");
     }
 
-    const lines = normalized.split("\n");
-    let html = "";
-    let paragraphLines = [];
-    let listType = null;
-    let listItems = [];
-    let quoteLines = [];
-    let codeLanguage = null;
-    let codeLines = [];
+    if (!response.ok) {
+      throw new Error(await readError(response));
+    }
 
-    const flushParagraph = () => {
-      if (paragraphLines.length === 0) {
-        return;
-      }
+    await consumeEventStream(response.body, event => applyStreamEvent(event, pendingAssistant));
+    await Promise.all([refreshChats(), refreshModels()]);
 
-      html += `<p>${renderInlineMarkdown(paragraphLines.join(" ").trim())}</p>`;
-      paragraphLines = [];
-    };
+    if (state.currentChatId) {
+      await openChat(state.currentChatId, true);
+    }
 
-    const flushList = () => {
-      if (!listType || listItems.length === 0) {
-        return;
-      }
+    setStatus("Response complete.", "neutral");
+  } catch (error) {
+    if (await tryRecoverStreamFailure(error, expectedMessageCount)) {
+      return;
+    }
+    pendingAssistant.content = describeStreamFailure(error);
+    pendingAssistant.isError = !looksLikeTransientStreamFailure(error);
+    pendingAssistant.pending = false;
+    setStatus(error.message || "The request failed.", "error");
+    renderMessages();
+  } finally {
+    state.isSending = false;
+    render();
+  }
+}
 
-      html += `<${listType}>${listItems.map(item => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</${listType}>`;
-      listType = null;
-      listItems = [];
-    };
+function renderMarkdown(value) {
+  const normalized = sanitizeMarkdownSource(String(value || "")).replace(/\r/g, "");
+  if (!normalized.trim()) {
+    return "";
+  }
 
-    const flushQuote = () => {
-      if (quoteLines.length === 0) {
-        return;
-      }
+  const lines = normalized.split("\n");
+  let html = "";
+  let paragraphLines = [];
+  let listType = null;
+  let listItems = [];
+  let quoteLines = [];
+  let codeLanguage = null;
+  let codeLines = [];
 
-      html += `<blockquote>${renderMarkdown(quoteLines.join("\n"))}</blockquote>`;
-      quoteLines = [];
-    };
+  const flushParagraph = () => {
+    if (paragraphLines.length === 0) {
+      return;
+    }
 
-    const flushCode = () => {
-      if (codeLanguage === null) {
-        return;
-      }
+    html += `<p>${renderInlineMarkdown(paragraphLines.join(" ").trim())}</p>`;
+    paragraphLines = [];
+  };
 
-      const languageClass = codeLanguage ? ` class="language-${escapeAttribute(codeLanguage)}"` : "";
-      html += `<pre class="markdown-code"><code${languageClass}>${escapeHtml(codeLines.join("\n"))}</code></pre>`;
-      codeLanguage = null;
-      codeLines = [];
-    };
+  const flushList = () => {
+    if (!listType || listItems.length === 0) {
+      return;
+    }
 
-    for (const line of lines) {
-      const fenceMatch = line.match(/^```([\w-]+)?\s*$/);
-      if (codeLanguage !== null) {
-        if (fenceMatch) {
-          flushCode();
-        } else {
-          codeLines.push(line);
-        }
-        continue;
-      }
+    html += `<${listType}>${listItems.map(item => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</${listType}>`;
+    listType = null;
+    listItems = [];
+  };
 
+  const flushQuote = () => {
+    if (quoteLines.length === 0) {
+      return;
+    }
+
+    html += `<blockquote>${renderMarkdown(quoteLines.join("\n"))}</blockquote>`;
+    quoteLines = [];
+  };
+
+  const flushCode = () => {
+    if (codeLanguage === null) {
+      return;
+    }
+
+    const languageClass = codeLanguage ? ` class="language-${escapeAttribute(codeLanguage)}"` : "";
+    html += `<pre class="markdown-code"><code${languageClass}>${escapeHtml(codeLines.join("\n"))}</code></pre>`;
+    codeLanguage = null;
+    codeLines = [];
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const fenceMatch = line.match(/^```([\w-]+)?\s*$/);
+    if (codeLanguage !== null) {
       if (fenceMatch) {
-        flushParagraph();
-        flushList();
-        flushQuote();
-        codeLanguage = fenceMatch[1] || "";
-        continue;
+        flushCode();
+      } else {
+        codeLines.push(line);
       }
+      continue;
+    }
 
-      if (!line.trim()) {
-        flushParagraph();
-        flushList();
-        flushQuote();
-        continue;
-      }
-
-      const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
-      if (headingMatch) {
-        flushParagraph();
-        flushList();
-        flushQuote();
-        const level = headingMatch[1].length;
-        html += `<h${level}>${renderInlineMarkdown(headingMatch[2].trim())}</h${level}>`;
-        continue;
-      }
-
-      const quoteMatch = line.match(/^>\s?(.*)$/);
-      if (quoteMatch) {
-        flushParagraph();
-        flushList();
-        quoteLines.push(quoteMatch[1]);
-        continue;
-      }
-      flushQuote();
-
-      const unorderedMatch = line.match(/^[-*+]\s+(.+)$/);
-      if (unorderedMatch) {
-        flushParagraph();
-        if (listType && listType !== "ul") {
-          flushList();
-        }
-        listType = "ul";
-        listItems.push(unorderedMatch[1].trim());
-        continue;
-      }
-
-      const orderedMatch = line.match(/^\d+\.\s+(.+)$/);
-      if (orderedMatch) {
-        flushParagraph();
-        if (listType && listType !== "ol") {
-          flushList();
-        }
-        listType = "ol";
-        listItems.push(orderedMatch[1].trim());
-        continue;
-      }
-
-      if (/^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())) {
-        flushParagraph();
-        flushList();
-        flushQuote();
-        html += "<hr />";
-        continue;
-      }
-
+    if (fenceMatch) {
+      flushParagraph();
       flushList();
-      paragraphLines.push(line.trim());
+      flushQuote();
+      codeLanguage = fenceMatch[1] || "";
+      continue;
     }
 
-    flushParagraph();
-    flushList();
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      flushQuote();
+      continue;
+    }
+
+    const headerCells = parseMarkdownTableRow(line);
+    if (headerCells && isMarkdownTableSeparator(lines[index + 1])) {
+      flushParagraph();
+      flushList();
+      flushQuote();
+      const alignments = parseMarkdownTableAlignments(lines[index + 1]);
+      const bodyRows = [];
+      index += 1;
+      while (index + 1 < lines.length) {
+        const nextRow = parseMarkdownTableRow(lines[index + 1]);
+        if (!nextRow) {
+          break;
+        }
+        bodyRows.push(nextRow);
+        index += 1;
+      }
+      html += renderMarkdownTable(headerCells, alignments, bodyRows);
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+    if (headingMatch) {
+      flushParagraph();
+      flushList();
+      flushQuote();
+      const level = headingMatch[1].length;
+      html += `<h${level}>${renderInlineMarkdown(headingMatch[2].trim())}</h${level}>`;
+      continue;
+    }
+
+    const quoteMatch = line.match(/^>\s?(.*)$/);
+    if (quoteMatch) {
+      flushParagraph();
+      flushList();
+      quoteLines.push(quoteMatch[1]);
+      continue;
+    }
     flushQuote();
-    flushCode();
 
-    return html;
-  }
-
-  function sanitizeMarkdownSource(value) {
-    const lines = String(value || "").split(/\r?\n/);
-    let inCodeFence = false;
-
-    return lines.map(line => {
-      if (/^```/.test(line.trim())) {
-        inCodeFence = !inCodeFence;
-        return line;
+    const unorderedMatch = line.match(/^[-*+]\s+(.+)$/);
+    if (unorderedMatch) {
+      flushParagraph();
+      if (listType && listType !== "ul") {
+        flushList();
       }
-
-      if (inCodeFence) {
-        return line;
-      }
-
-      return line.replace(/<\/?[a-z][^>]*>/gi, "");
-    }).join("\n");
-  }
-
-  function renderInlineMarkdown(value) {
-    const codeTokens = [];
-    let output = escapeHtml(value || "");
-
-    output = output.replace(/`([^`]+)`/g, (_, code) => {
-      const token = `%%CODE${codeTokens.length}%%`;
-      codeTokens.push(`<code>${code}</code>`);
-      return token;
-    });
-
-    output = output.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
-      const safeUrl = sanitizeMarkdownUrl(url);
-      if (!safeUrl) {
-        return alt ? escapeHtml(alt) : "";
-      }
-
-      return `<img src="${escapeAttribute(safeUrl)}" alt="${escapeAttribute(alt)}" loading="lazy" />`;
-    });
-
-    output = output.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
-      const safeUrl = sanitizeMarkdownUrl(url);
-      if (!safeUrl) {
-        return label;
-      }
-
-      return `<a href="${escapeAttribute(safeUrl)}" target="_blank" rel="noreferrer noopener">${label}</a>`;
-    });
-
-    output = output.replace(/\b(https?:\/\/[^\s<]+[^<.,;:"')\]\s])/g, match => {
-      const safeUrl = sanitizeMarkdownUrl(match);
-      if (!safeUrl) {
-        return match;
-      }
-
-      return `<a href="${escapeAttribute(safeUrl)}" target="_blank" rel="noreferrer noopener">${match}</a>`;
-    });
-
-    output = output.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    output = output.replace(/__([^_]+)__/g, "<strong>$1</strong>");
-    output = output.replace(/~~([^~]+)~~/g, "<del>$1</del>");
-    output = output.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-    output = output.replace(/_([^_]+)_/g, "<em>$1</em>");
-
-    codeTokens.forEach((token, index) => {
-      output = output.replace(`%%CODE${index}%%`, token);
-    });
-
-    return output;
-  }
-
-  function sanitizeMarkdownUrl(url) {
-    try {
-      const parsed = new URL(String(url || "").trim(), window.location.origin);
-      if (["http:", "https:", "mailto:"].includes(parsed.protocol)) {
-        return parsed.href;
-      }
-    } catch {
+      listType = "ul";
+      listItems.push(unorderedMatch[1].trim());
+      continue;
     }
 
+    const orderedMatch = line.match(/^\d+\.\s+(.+)$/);
+    if (orderedMatch) {
+      flushParagraph();
+      if (listType && listType !== "ol") {
+        flushList();
+      }
+      listType = "ol";
+      listItems.push(orderedMatch[1].trim());
+      continue;
+    }
+
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())) {
+      flushParagraph();
+      flushList();
+      flushQuote();
+      html += "<hr />";
+      continue;
+    }
+
+    flushList();
+    paragraphLines.push(line.trim());
+  }
+
+  flushParagraph();
+  flushList();
+  flushQuote();
+  flushCode();
+
+  return html;
+}
+
+function sanitizeMarkdownSource(value) {
+  const lines = String(value || "").split(/\r?\n/);
+  let inCodeFence = false;
+
+  return lines.map(line => {
+    if (/^```/.test(line.trim())) {
+      inCodeFence = !inCodeFence;
+      return line;
+    }
+
+    if (inCodeFence) {
+      return line;
+    }
+
+    return line.replace(/<\/?[a-z][^>]*>/gi, "");
+  }).join("\n");
+}
+
+function renderInlineMarkdown(value) {
+  const codeTokens = [];
+  let output = escapeHtml(value || "");
+
+  output = output.replace(/`([^`]+)`/g, (_, code) => {
+    const token = `%%CODE${codeTokens.length}%%`;
+    codeTokens.push(`<code>${code}</code>`);
+    return token;
+  });
+
+  output = output.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
+    const safeUrl = sanitizeMarkdownUrl(url);
+    if (!safeUrl) {
+      return alt ? escapeHtml(alt) : "";
+    }
+
+    return `<img src="${escapeAttribute(safeUrl)}" alt="${escapeAttribute(alt)}" loading="lazy" />`;
+  });
+
+  output = output.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+    const safeUrl = sanitizeMarkdownUrl(url);
+    if (!safeUrl) {
+      return label;
+    }
+
+    return `<a href="${escapeAttribute(safeUrl)}" target="_blank" rel="noreferrer noopener">${label}</a>`;
+  });
+
+  output = output.replace(/\b(https?:\/\/[^\s<]+[^<.,;:"')\]\s])/g, match => {
+    const safeUrl = sanitizeMarkdownUrl(match);
+    if (!safeUrl) {
+      return match;
+    }
+
+    return `<a href="${escapeAttribute(safeUrl)}" target="_blank" rel="noreferrer noopener">${match}</a>`;
+  });
+
+  output = output.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  output = output.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+  output = output.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+  output = output.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  output = output.replace(/_([^_]+)_/g, "<em>$1</em>");
+
+  codeTokens.forEach((token, index) => {
+    output = output.replace(`%%CODE${index}%%`, token);
+  });
+
+  return output;
+}
+
+function parseMarkdownTableRow(line) {
+  const trimmed = String(line || "").trim();
+  if (!trimmed.includes("|")) {
     return null;
   }
+
+  const normalized = trimmed.replace(/^\|/, "").replace(/\|$/, "");
+  const cells = normalized.split("|").map(cell => cell.trim());
+  return cells.length > 1 ? cells : null;
+}
+
+function isMarkdownTableSeparator(line) {
+  const cells = parseMarkdownTableRow(line);
+  return Array.isArray(cells) && cells.every(cell => /^:?-{3,}:?$/.test(cell));
+}
+
+function parseMarkdownTableAlignments(line) {
+  const cells = parseMarkdownTableRow(line) || [];
+  return cells.map(cell => {
+    if (/^:-{3,}:$/.test(cell)) {
+      return "center";
+    }
+    if (/^-{3,}:$/.test(cell)) {
+      return "right";
+    }
+    return "left";
+  });
+}
+
+function renderMarkdownTable(headers, alignments, rows) {
+  const renderCell = (tag, cell, alignment = "left") => {
+    const style = alignment && alignment !== "left" ? ` style="text-align:${alignment}"` : "";
+    return `<${tag}${style}>${renderInlineMarkdown(cell)}</${tag}>`;
+  };
+
+  return `
+    <div class="markdown-table-wrap">
+      <table>
+        <thead>
+          <tr>${headers.map((cell, index) => renderCell("th", cell, alignments[index])).join("")}</tr>
+        </thead>
+        <tbody>
+          ${rows.map(row => `<tr>${headers.map((_header, index) => renderCell("td", row[index] || "", alignments[index])).join("")}</tr>`).join("")}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+function sanitizeMarkdownUrl(url) {
+  try {
+    const parsed = new URL(String(url || "").trim(), window.location.origin);
+    if (["http:", "https:", "mailto:"].includes(parsed.protocol)) {
+      return parsed.href;
+    }
+  } catch {
+  }
+
+  return null;
+}
 
 async function openSettings() {
   try {
@@ -2082,6 +2469,11 @@ async function openSettings() {
     elements.settingsBaseUrl.value = settings.baseUrl || "";
     elements.settingsApiToken.value = settings.apiToken || "";
     elements.settingsMcpPath.value = settings.mcpConfigPath || "";
+    elements.settingsChatFontScale.value = String(normalizeChatFontScale(settings.chatFontScale));
+    if (elements.settingsMcpUpload) {
+      elements.settingsMcpUpload.value = "";
+    }
+    renderSelectedMcpConfigLabel(settings.mcpConfigPath);
     if (elements.settingsRequireLogin) {
       elements.settingsRequireLogin.checked = Boolean(settings.requireLogin);
     }
@@ -2108,16 +2500,27 @@ async function saveSettings() {
   elements.settingsStatus.hidden = true;
   elements.settingsStatus.textContent = "";
 
+  let mcpConfigUpload = null;
+  if (elements.settingsMcpUpload?.files?.[0]) {
+    const selectedFile = elements.settingsMcpUpload.files[0];
+    mcpConfigUpload = {
+      fileName: selectedFile.name,
+      content: await selectedFile.text(),
+    };
+  }
+
   const payload = {
     baseUrl: elements.settingsBaseUrl.value.trim(),
     apiToken: elements.settingsApiToken.value.trim(),
     mcpConfigPath: elements.settingsMcpPath.value.trim(),
+    mcpConfigUpload,
+    chatFontScale: normalizeChatFontScale(elements.settingsChatFontScale?.value),
     requireLogin: elements.settingsRequireLogin?.checked || false,
     pin: elements.settingsPin?.value.trim() || "",
   };
 
   try {
-    await fetchJson("/api/settings", {
+    const settings = await fetchJson("/api/settings", {
       method: "POST",
       body: JSON.stringify(payload),
     });
@@ -2129,6 +2532,12 @@ async function saveSettings() {
       elements.settingsPin.value = "";
       elements.settingsPin.dataset.hasExistingPin = payload.requireLogin ? "true" : "false";
     }
+    if (elements.settingsMcpUpload) {
+      elements.settingsMcpUpload.value = "";
+    }
+    state.chatFontScale = normalizeChatFontScale(settings.chatFontScale);
+    applyChatFontScale(state.chatFontScale);
+    renderSelectedMcpConfigLabel(settings.mcpConfigPath);
     renderSettingsSecurityState();
 
     await refreshBootstrap();
@@ -2162,6 +2571,38 @@ function renderSettingsSecurityState() {
       ? "Leave the PIN blank to keep the current one, or enter a new PIN to replace it."
       : "Enter a PIN to enable sign-in."
     : "Sign-in is currently disabled.";
+}
+
+function normalizeChatFontScale(value) {
+  const parsed = Number.parseFloat(String(value || "1"));
+  if (!Number.isFinite(parsed)) {
+    return 1;
+  }
+
+  return Math.min(1.2, Math.max(0.9, Math.round(parsed * 100) / 100));
+}
+
+function applyChatFontScale(value) {
+  document.documentElement.style.setProperty("--chat-font-scale", String(normalizeChatFontScale(value)));
+}
+
+function renderSelectedMcpConfigLabel(currentPath = "") {
+  if (!elements.settingsMcpUploadName) {
+    return;
+  }
+
+  const selectedFile = elements.settingsMcpUpload?.files?.[0];
+  if (selectedFile) {
+    elements.settingsMcpUploadName.textContent = `Selected upload: ${selectedFile.name}`;
+    return;
+  }
+
+  if (currentPath) {
+    elements.settingsMcpUploadName.textContent = `Current source: ${currentPath}`;
+    return;
+  }
+
+  elements.settingsMcpUploadName.textContent = "No uploaded file selected.";
 }
 
 function dismissConfigBanner() {
@@ -2279,7 +2720,9 @@ function renderActionIcons() {
   setButtonIcon(elements.logoutButton, "lock");
   setButtonIcon(elements.attachButton, "paperclip");
   setButtonIcon(elements.configBannerDismiss, "close");
+  setButtonIcon(elements.modelRefreshButton, "refresh");
   renderThemeButton();
+  renderTopBarActions();
 }
 
 function renderThemeButton() {
@@ -2301,6 +2744,10 @@ function renderIcon(iconName) {
   switch (iconName) {
     case "menu":
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"></path><path d="M4 12h16"></path><path d="M4 17h16"></path></svg>';
+    case "chevronDown":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>';
+    case "chevronUp":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6"></path></svg>';
     case "sliders":
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16"></path><path d="M4 12h16"></path><path d="M4 18h16"></path><circle cx="9" cy="6" r="2"></circle><circle cx="15" cy="12" r="2"></circle><circle cx="11" cy="18" r="2"></circle></svg>';
     case "download":
@@ -2308,7 +2755,7 @@ function renderIcon(iconName) {
     case "trash":
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M6 7l1 12h10l1-12"></path><path d="M9 7V4h6v3"></path></svg>';
     case "gear":
-      return '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"></circle><path d="M19.4 15a1 1 0 0 0 .2 1.1l.1.1a2 2 0 0 1 0 2.8 2 2 0 0 1-2.8 0l-.1-.1a1 1 0 0 0-1.1-.2 1 1 0 0 0-.6.9V20a2 2 0 0 1-4 0v-.2a1 1 0 0 0-.6-.9 1 1 0 0 0-1.1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1 1 0 0 0 .2-1.1 1 1 0 0 0-.9-.6H4a2 2 0 0 1 0-4h.2a1 1 0 0 0 .9-.6 1 1 0 0 0-.2-1.1l-.1-.1a2 2 0 0 1 2.8-2.8l.1.1a1 1 0 0 0 1.1.2 1 1 0 0 0 .6-.9V4a2 2 0 0 1 4 0v.2a1 1 0 0 0 .6.9 1 1 0 0 0 1.1-.2l.1-.1a2 2 0 0 1 2.8 2.8l-.1.1a1 1 0 0 0-.2 1.1 1 1 0 0 0 .9.6H20a2 2 0 0 1 0 4h-.2a1 1 0 0 0-.9.6Z"></path></svg>';
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.6 2.8h2.8l.5 2.1c.55.16 1.07.38 1.56.65l1.95-.97 1.98 1.98-.97 1.95c.28.49.5 1.01.65 1.56l2.13.5v2.8l-2.13.5a7.3 7.3 0 0 1-.65 1.56l.97 1.95-1.98 1.98-1.95-.97a7.3 7.3 0 0 1-1.56.65l-.5 2.13h-2.8l-.5-2.13a7.3 7.3 0 0 1-1.56-.65l-1.95.97-1.98-1.98.97-1.95a7.3 7.3 0 0 1-.65-1.56l-2.13-.5v-2.8l2.13-.5c.16-.55.38-1.07.65-1.56l-.97-1.95 1.98-1.98 1.95.97c.49-.28 1.01-.5 1.56-.65Z"></path><circle cx="12" cy="12" r="3.1"></circle></svg>';
     case "lock":
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"></rect><path d="M8 11V8a4 4 0 1 1 8 0v3"></path></svg>';
     case "image":
@@ -2323,6 +2770,12 @@ function renderIcon(iconName) {
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"></path></svg>';
     case "paperclip":
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>';
+    case "retry":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v6h6"></path><path d="M21 12a9 9 0 0 0-15-6.7L3 9"></path><path d="M21 21v-6h-6"></path><path d="M3 12a9 9 0 0 0 15 6.7L21 15"></path></svg>';
+    case "pencil":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path></svg>';
+    case "refresh":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path><path d="M3 21v-5h5"></path></svg>';
     default:
       return "";
   }
@@ -2382,4 +2835,34 @@ async function recoverInterruptedStream() {
     setStatus("Chat refreshed after reconnecting.", "neutral");
   } catch {
   }
+}
+
+function toggleTopBarActions() {
+  if (isDesktopLayout()) {
+    return;
+  }
+
+  state.topBarActionsExpanded = !state.topBarActionsExpanded;
+  renderTopBarActions();
+}
+
+function collapseTopBarActions() {
+  if (isDesktopLayout() || !state.topBarActionsExpanded) {
+    return;
+  }
+
+  state.topBarActionsExpanded = false;
+  renderTopBarActions();
+}
+
+function syncTopBarActionsLayout() {
+  if (isDesktopLayout()) {
+    state.topBarActionsExpanded = false;
+  }
+
+  renderTopBarActions();
+}
+
+function isDesktopLayout() {
+  return desktopLayoutMedia.matches;
 }

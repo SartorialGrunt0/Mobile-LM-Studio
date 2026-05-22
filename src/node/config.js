@@ -2,8 +2,16 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 function resolveSharedDataDirectory() {
-  const programData = process.env.ProgramData || path.join(process.env.SystemDrive || "C:", "ProgramData");
-  return path.join(programData, "MobileLmStudio");
+  if (process.env.DATA_DIR) {
+    return process.env.DATA_DIR;
+  }
+
+  const programData = process.env.ProgramData;
+  if (!programData && process.platform !== "win32") {
+    return "/data";
+  }
+
+  return path.join(programData || path.join(process.env.SystemDrive || "C:", "ProgramData"), "MobileLmStudio");
 }
 
 function resolveRuntimeSettingsPath() {
@@ -34,6 +42,9 @@ function getDefaultConfig() {
       PinHash: "",
       PinSalt: "",
       Iterations: 100000
+    },
+    Ui: {
+      ChatFontScale: 1
     },
     Storage: {
       ConnectionString: "Data Source=%PROGRAMDATA%\\MobileLmStudio\\mobile-lm-studio.db"
@@ -118,7 +129,12 @@ function assignNestedValue(target, dottedKey, rawValue) {
 }
 
 function normalizeConnectionString(connectionString) {
-  const normalized = String(connectionString || "").replaceAll("%PROGRAMDATA%", process.env.ProgramData || "C:\\ProgramData");
+  const dataDir = resolveSharedDataDirectory();
+  const programData = process.env.ProgramData || path.join(process.env.SystemDrive || "C:", "ProgramData");
+  const normalized = String(connectionString || "")
+    .replaceAll("%PROGRAMDATA%\\MobileLmStudio", dataDir)
+    .replaceAll("%PROGRAMDATA%/MobileLmStudio", dataDir)
+    .replaceAll("%PROGRAMDATA%", programData);
   const match = normalized.match(/^\s*Data Source\s*=\s*(.+?)\s*$/i);
   if (!match) {
     return normalized;
@@ -128,15 +144,43 @@ function normalizeConnectionString(connectionString) {
   return `Data Source=${path.resolve(rawPath)}`;
 }
 
+function applyEnvOverrides(config) {
+  const next = deepMerge({}, config);
+
+  if (process.env.LMSTUDIO_URL) {
+    next.LmStudio = next.LmStudio || {};
+    next.LmStudio.BaseUrl = process.env.LMSTUDIO_URL;
+  }
+
+  if (process.env.LMSTUDIO_API_TOKEN !== undefined && process.env.LMSTUDIO_API_TOKEN !== "") {
+    next.LmStudio = next.LmStudio || {};
+    next.LmStudio.ApiToken = process.env.LMSTUDIO_API_TOKEN;
+  }
+
+  if (process.env.LMSTUDIO_MCP_CONFIG_PATH) {
+    next.LmStudio = next.LmStudio || {};
+    next.LmStudio.McpConfigPath = process.env.LMSTUDIO_MCP_CONFIG_PATH;
+  }
+
+  if (process.env.WEB_PORT) {
+    next.Web = next.Web || {};
+    next.Web.Urls = [`http://0.0.0.0:${process.env.WEB_PORT}`];
+  }
+
+  return next;
+}
+
 function readConfig(options = {}) {
   const baseConfigPath = options.baseConfigPath || resolveDefaultConfigPath();
   const runtimeSettingsPath = options.runtimeSettingsPath || resolveRuntimeSettingsPath();
 
-  const merged = deepMerge(
-    deepMerge(getDefaultConfig(), loadJsonFile(baseConfigPath)),
-    loadJsonFile(runtimeSettingsPath)
+  // Priority (lowest to highest): defaults → appsettings.json → env vars → runtime settings file → CLI args.
+  // Env vars seed initial values but are overridden by anything the user saves via the UI.
+  const withEnv = applyEnvOverrides(
+    deepMerge(getDefaultConfig(), loadJsonFile(baseConfigPath))
   );
 
+  const merged = deepMerge(withEnv, loadJsonFile(runtimeSettingsPath));
   const withArgs = applyArgOverrides(merged, process.argv.slice(2));
   withArgs.Storage.ConnectionString = normalizeConnectionString(withArgs.Storage.ConnectionString);
   if (typeof withArgs.urls === "string" && withArgs.urls.trim()) {
@@ -154,6 +198,7 @@ function readConfig(options = {}) {
 
 module.exports = {
   applyArgOverrides,
+  applyEnvOverrides,
   deepMerge,
   getDefaultConfig,
   normalizeConnectionString,

@@ -62,7 +62,8 @@ function createApp() {
       lmStudioConfigured: Boolean(currentConfig.LmStudio?.BaseUrl),
       mcpConfigured: Boolean(currentConfig.LmStudio?.McpConfigPath),
       hasApiToken: Boolean(currentConfig.LmStudio?.ApiToken),
-      defaultUrl: request.appState.defaultUrl
+      defaultUrl: request.appState.defaultUrl,
+      chatFontScale: currentConfig.Ui?.ChatFontScale || 1
     });
   });
 
@@ -144,9 +145,15 @@ function createApp() {
           ...request.appState.config.LmStudio,
           BaseUrl: payload.baseUrl,
           ApiToken: payload.apiToken,
-          McpConfigPath: payload.mcpConfigPath
+          McpConfigPath: payload.mcpConfigUpload?.content
+            ? path.join(path.dirname(request.appState.runtimeSettingsPath), "mcp.uploaded.json")
+            : payload.mcpConfigPath
         },
-        Security: security
+        Security: security,
+        Ui: {
+          ...request.appState.config.Ui,
+          ChatFontScale: payload.chatFontScale
+        }
       };
       if (hasPin(security) && wasAuthenticated) {
         appendAuthCookie(response, security);
@@ -328,6 +335,34 @@ function createApp() {
     });
   });
 
+  app.post("/api/chats/:chatId/messages/:messageId/edit-stream", async (request, response) => {
+    const chatId = request.params.chatId;
+    const messageId = request.params.messageId;
+    const chat = request.appState.repository.getChatRecord(chatId);
+    if (!chat) {
+      response.sendStatus(404);
+      return;
+    }
+
+    const chatRequest = normalizeChatStreamRequest({ ...request.body, chatId });
+    if (!chatRequest.model || (!chatRequest.input.trim() && chatRequest.attachments.length === 0)) {
+      response.status(400).json({ error: "Model and either text or an attachment are required." });
+      return;
+    }
+
+    const previousResponseId = request.appState.repository.truncateFromMessage(chatId, messageId);
+    if (previousResponseId === null && !request.appState.repository.getChatRecord(chatId)) {
+      response.sendStatus(404);
+      return;
+    }
+
+    request.appState.repository.saveUserMessage(chatId, chatRequest);
+    await streamChat(request, response, lmStudioClient, chatRequest, {
+      previousResponseId: previousResponseId || null,
+      persistChatId: chatId,
+    });
+  });
+
   app.get("*", (_request, response) => {
     response.sendFile(path.join(staticRoot, "index.html"));
   });
@@ -340,6 +375,7 @@ function buildSettingsResponse(config) {
     baseUrl: config.LmStudio?.BaseUrl || "",
     apiToken: config.LmStudio?.ApiToken || "",
     mcpConfigPath: config.LmStudio?.McpConfigPath || "",
+    chatFontScale: config.Ui?.ChatFontScale || 1,
     requireLogin: hasPin(config.Security)
   };
 }
@@ -349,12 +385,40 @@ function normalizeSettingsPayload(payload) {
     baseUrl: String(payload?.baseUrl || "").trim(),
     apiToken: String(payload?.apiToken || "").trim(),
     mcpConfigPath: String(payload?.mcpConfigPath || "").trim(),
+    mcpConfigUpload: payload?.mcpConfigUpload && typeof payload.mcpConfigUpload === "object"
+      ? {
+          fileName: String(payload.mcpConfigUpload.fileName || "").trim(),
+          content: String(payload.mcpConfigUpload.content || "")
+        }
+      : null,
+    chatFontScale: toOptionalFloat(payload?.chatFontScale) || 1,
     requireLogin: Boolean(payload?.requireLogin),
     pin: String(payload?.pin || "").trim()
   };
 }
 
 function validateSettings(settings) {
+  if (!Number.isFinite(settings.chatFontScale) || settings.chatFontScale < 0.9 || settings.chatFontScale > 1.2) {
+    return {
+      chatFontScale: ["Chat text size must be between 0.9 and 1.2."]
+    };
+  }
+
+  if (settings.mcpConfigUpload?.content) {
+    try {
+      const parsed = JSON.parse(settings.mcpConfigUpload.content);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return {
+          mcpConfigUpload: ["Uploaded MCP config must contain a JSON object."]
+        };
+      }
+    } catch {
+      return {
+        mcpConfigUpload: ["Uploaded MCP config must contain valid JSON."]
+      };
+    }
+  }
+
   if (!settings.baseUrl) {
     return null;
   }

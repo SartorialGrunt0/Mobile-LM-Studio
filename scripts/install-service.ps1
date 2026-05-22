@@ -100,14 +100,40 @@ function Resolve-SourcePath {
     return (Resolve-Path $PublishPath).Path
 }
 
-function Resolve-ServiceCommand {
+function Resolve-NssmPath {
+    param([string]$BasePath)
+
+    $localNssm = Join-Path $BasePath "nssm.exe"
+    if (Test-Path $localNssm) {
+        return $localNssm
+    }
+
+    $pathNssm = Get-Command nssm -ErrorAction SilentlyContinue
+    if ($pathNssm) {
+        return $pathNssm.Source
+    }
+
+    throw "nssm.exe was not found in the install directory or on PATH. Include nssm.exe in the publish output or install it separately."
+}
+
+function Resolve-NodePath {
     param([string]$BasePath)
 
     $nodePath = Join-Path $BasePath "node.exe"
-    if (-not (Test-Path $nodePath)) {
-        $nodeCommand = Get-Command node -ErrorAction Stop
-        $nodePath = $nodeCommand.Source
+    if (Test-Path $nodePath) {
+        return $nodePath
     }
+
+    $nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+    if ($nodeCommand) {
+        return $nodeCommand.Source
+    }
+
+    throw "node.exe was not found in the install directory or on PATH."
+}
+
+function Resolve-ServerScript {
+    param([string]$BasePath)
 
     $serverCandidates = @(
         (Join-Path $BasePath "src\node\server.js"),
@@ -119,7 +145,7 @@ function Resolve-ServiceCommand {
         throw "Could not find the Node.js server entry point in $BasePath. Expected src\node\server.js."
     }
 
-    return ('"{0}" "{1}"' -f $nodePath, $serverPath)
+    return $serverPath
 }
 
 function Get-ConnectionString {
@@ -451,28 +477,40 @@ $pinPayload = if ([string]::IsNullOrWhiteSpace($Pin)) {
 Write-AppSettings -TargetPath $resolvedInstallPath -Url $LmStudioUrl -ApiToken $LmStudioApiToken -McpPath $McpConfigPath -PinPayload $pinPayload -Iterations $PinIterations -ListenAddress $ListenUrl -ConnectionString $connectionString
 Write-RuntimeSettings -SettingsPath (Get-RuntimeSettingsPath) -Url $LmStudioUrl -ApiToken $LmStudioApiToken -McpPath $McpConfigPath
 
-$serviceCommand = Resolve-ServiceCommand -BasePath $resolvedInstallPath
+$nssmPath = Resolve-NssmPath -BasePath $resolvedInstallPath
+$nodePath = Resolve-NodePath -BasePath $resolvedInstallPath
+$serverScript = Resolve-ServerScript -BasePath $resolvedInstallPath
 $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 
 if ($service) {
     if ($service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) {
-        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-        $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Stopped, [TimeSpan]::FromSeconds(15))
+        & $nssmPath stop $ServiceName 2>$null | Out-Null
+        Start-Sleep -Milliseconds 2000
     }
 
-    Assert-TcpPortAvailable -Port $listenEndpoint.Port
-
-    & sc.exe config $ServiceName "start= auto" "binPath= $serviceCommand" | Out-Null
-    & sc.exe description $ServiceName "Mobile-first web client for LM Studio (Node.js runtime)." | Out-Null
-} else {
-    Assert-TcpPortAvailable -Port $listenEndpoint.Port
-
-    New-Service -Name $ServiceName -BinaryPathName $serviceCommand -DisplayName "Mobile LM Studio" -Description "Mobile-first web client for LM Studio (Node.js runtime)." -StartupType Automatic | Out-Null
+    # Remove and re-create the service so that nssm.exe is always the service binary.
+    # Updating via 'nssm set' on a service not originally created by nssm leaves the
+    # Windows service binary path pointing to the raw application, which causes the
+    # SCM to kill it immediately because node.exe does not implement the SCM protocol.
+    & $nssmPath remove $ServiceName confirm | Out-Null
 }
 
-& sc.exe failure $ServiceName "reset= 86400" "actions= restart/5000/restart/5000/restart/15000" | Out-Null
+Assert-TcpPortAvailable -Port $listenEndpoint.Port
+
+& $nssmPath install $ServiceName $nodePath $serverScript | Out-Null
+& $nssmPath set $ServiceName DisplayName "Mobile LM Studio" | Out-Null
+& $nssmPath set $ServiceName Description "Mobile-first web client for LM Studio (Node.js runtime)." | Out-Null
+& $nssmPath set $ServiceName AppDirectory $resolvedInstallPath | Out-Null
+& $nssmPath set $ServiceName Start SERVICE_AUTO_START | Out-Null
+& $nssmPath set $ServiceName AppStdout (Join-Path (Get-LogDirectory) "service-stdout.log") | Out-Null
+& $nssmPath set $ServiceName AppStderr (Join-Path (Get-LogDirectory) "service-stderr.log") | Out-Null
+& $nssmPath set $ServiceName AppRotateFiles 1 | Out-Null
+& $nssmPath set $ServiceName AppRotateBytes 5242880 | Out-Null
+
+& $nssmPath set $ServiceName AppExit Default Restart | Out-Null
+& $nssmPath set $ServiceName AppRestartDelay 5000 | Out-Null
 Ensure-WebFirewallRule -Port $listenEndpoint.Port
-Start-Service -Name $ServiceName
+& $nssmPath start $ServiceName | Out-Null
 Wait-ForServicePort -ServiceName $ServiceName -ProbeHost $listenEndpoint.Host -Port $listenEndpoint.Port -LogDirectory (Get-LogDirectory)
 
 if (-not [string]::IsNullOrWhiteSpace($resolvedFailurePath) -and (Test-Path $resolvedFailurePath)) {

@@ -93,6 +93,43 @@ Copy-Item -Path $node.Source -Destination (Join-Path $publishRoot "node.exe") -F
 Copy-Item -Path (Join-Path $repoRoot "scripts\install-service.ps1") -Destination (Join-Path $publishRoot "scripts\install-service.ps1") -Force
 Copy-Item -Path (Join-Path $repoRoot "scripts\uninstall-service.ps1") -Destination (Join-Path $publishRoot "scripts\uninstall-service.ps1") -Force
 
+# Include nssm.exe (Non-Sucking Service Manager) for Windows service wrapper
+$nssmPublishDest = Join-Path $publishRoot "nssm.exe"
+$nssmCandidates = @(
+    (Join-Path $repoRoot "tools\nssm.exe"),
+    (Join-Path $repoRoot "tools\nssm-2.24\win64\nssm.exe")
+)
+$nssmSource = $nssmCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+if (-not $nssmSource) {
+    $nssmCommand = Get-Command nssm -ErrorAction SilentlyContinue
+    if ($nssmCommand) {
+        $nssmSource = $nssmCommand.Source
+    }
+}
+
+if (-not $nssmSource) {
+    $nssmZipUrl = "https://nssm.cc/release/nssm-2.24.zip"
+    $nssmZipPath = Join-Path $repoRoot "tools\nssm-2.24.zip"
+    $nssmExtractPath = Join-Path $repoRoot "tools"
+    New-Item -ItemType Directory -Path $nssmExtractPath -Force | Out-Null
+
+    Write-Host "Downloading nssm from $nssmZipUrl..."
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -Uri $nssmZipUrl -OutFile $nssmZipPath -UseBasicParsing
+    Expand-Archive -Path $nssmZipPath -DestinationPath $nssmExtractPath -Force
+    $nssmSource = Join-Path $nssmExtractPath "nssm-2.24\win64\nssm.exe"
+
+    if (-not (Test-Path $nssmSource)) {
+        throw "Failed to extract nssm.exe from the downloaded archive."
+    }
+
+    Write-Host "nssm.exe downloaded and cached in tools/ directory."
+}
+
+Copy-Item -Path $nssmSource -Destination $nssmPublishDest -Force
+Write-Host "Included nssm.exe for Windows service management."
+
 $iscc = Get-Command iscc -ErrorAction SilentlyContinue
 if ($iscc) {
     $env:MLS_PUBLISH_DIR = $publishRoot
