@@ -370,6 +370,15 @@ function bindEvents() {
   });
   elements.settingsRequireLogin?.addEventListener("change", () => renderSettingsSecurityState());
 
+  elements.settingsApiToken.addEventListener("focus", () => {
+    elements.settingsApiToken.type = "text";
+  });
+  elements.settingsApiToken.addEventListener("blur", () => {
+    if (elements.settingsApiToken.value) {
+      elements.settingsApiToken.type = "password";
+    }
+  });
+
   elements.settingsButton.addEventListener("click", () => openSettings());
   elements.confirmCancelButton?.addEventListener("click", () => closeConfirmDialog());
   elements.confirmAcceptButton?.addEventListener("click", () => void confirmPendingAction());
@@ -1625,7 +1634,8 @@ async function readError(response) {
         return firstError[0];
       }
     }
-    return payload.detail || payload.error || payload.title || "The request failed.";
+    const value = payload.detail || payload.error || payload.title || "The request failed.";
+    return typeof value === "string" ? value : JSON.stringify(value);
   }
 
   return (await response.text()) || `Request failed with ${response.status}.`;
@@ -3036,6 +3046,7 @@ async function openSettings() {
     const settings = await fetchJson("/api/settings");
     elements.settingsBaseUrl.value = settings.baseUrl || "";
     elements.settingsApiToken.value = settings.apiToken || "";
+    elements.settingsApiToken.type = settings.apiToken ? "password" : "text";
     elements.settingsMcpPath.value = settings.mcpConfigPath || "";
     elements.settingsChatFontScale.value = String(normalizeChatFontScale(settings.chatFontScale));
     if (elements.settingsMcpUpload) {

@@ -82,7 +82,8 @@ class LmStudioClient {
 
     try {
       const payload = JSON.parse(content);
-      return payload.detail || payload.error || payload.title || content;
+      const value = payload.detail || payload.error || payload.message || payload.title || content;
+      return typeof value === "string" ? value : JSON.stringify(value);
     } catch {
       return content;
     }
