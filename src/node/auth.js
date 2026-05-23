@@ -2,14 +2,43 @@ const crypto = require("node:crypto");
 
 const AUTH_COOKIE_NAME = "mobile-lm-studio";
 const AUTH_COOKIE_TTL_MS = 1000 * 60 * 60 * 24 * 30;
+const DEFAULT_ITERATIONS = 600000;
+const LOGIN_MAX_ATTEMPTS = 10;
+const LOGIN_WINDOW_MS = 5 * 60 * 1000;
+
+// In-memory store: ip -> { count, resetAt }
+const loginAttempts = new Map();
 
 function hasPin(security) {
   return Boolean(security?.PinHash && security?.PinSalt);
 }
 
 function getIterations(security) {
-  const iterations = Number.parseInt(String(security?.Iterations || "100000"), 10);
-  return Number.isFinite(iterations) && iterations > 0 ? iterations : 100000;
+  const iterations = Number.parseInt(String(security?.Iterations || DEFAULT_ITERATIONS), 10);
+  return Number.isFinite(iterations) && iterations > 0 ? iterations : DEFAULT_ITERATIONS;
+}
+
+function isLoginRateLimited(ip) {
+  const now = Date.now();
+  const record = loginAttempts.get(ip);
+  if (!record || now >= record.resetAt) {
+    return false;
+  }
+  return record.count >= LOGIN_MAX_ATTEMPTS;
+}
+
+function recordLoginAttempt(ip, success) {
+  if (success) {
+    loginAttempts.delete(ip);
+    return;
+  }
+  const now = Date.now();
+  const record = loginAttempts.get(ip);
+  if (!record || now >= record.resetAt) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
+  } else {
+    record.count++;
+  }
 }
 
 function verifyPin(pin, security) {
@@ -137,5 +166,7 @@ module.exports = {
   clearAuthCookie,
   hasPin,
   isAuthenticated,
+  isLoginRateLimited,
+  recordLoginAttempt,
   verifyPin
 };

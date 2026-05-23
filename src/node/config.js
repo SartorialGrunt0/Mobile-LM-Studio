@@ -41,7 +41,7 @@ function getDefaultConfig() {
     Security: {
       PinHash: "",
       PinSalt: "",
-      Iterations: 100000
+      Iterations: 600000
     },
     Ui: {
       ChatFontScale: 1

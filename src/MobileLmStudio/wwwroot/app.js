@@ -378,6 +378,9 @@ function bindEvents() {
       elements.settingsApiToken.type = "password";
     }
   });
+  elements.settingsApiToken.addEventListener("input", () => {
+    elements.settingsApiToken.dataset.modified = "true";
+  });
 
   elements.settingsButton.addEventListener("click", () => openSettings());
   elements.confirmCancelButton?.addEventListener("click", () => closeConfirmDialog());
@@ -3045,8 +3048,13 @@ async function openSettings() {
   try {
     const settings = await fetchJson("/api/settings");
     elements.settingsBaseUrl.value = settings.baseUrl || "";
-    elements.settingsApiToken.value = settings.apiToken || "";
-    elements.settingsApiToken.type = settings.apiToken ? "password" : "text";
+    elements.settingsApiToken.value = "";
+    elements.settingsApiToken.dataset.originallySet = settings.hasApiToken ? "true" : "false";
+    elements.settingsApiToken.dataset.modified = "false";
+    elements.settingsApiToken.type = "text";
+    elements.settingsApiToken.placeholder = settings.hasApiToken
+      ? "Token saved — paste new value to replace, or clear to remove"
+      : "Optional API token";
     elements.settingsMcpPath.value = settings.mcpConfigPath || "";
     elements.settingsChatFontScale.value = String(normalizeChatFontScale(settings.chatFontScale));
     if (elements.settingsMcpUpload) {
@@ -3088,9 +3096,14 @@ async function saveSettings() {
     };
   }
 
+  const tokenModified = elements.settingsApiToken.dataset.modified === "true";
+  const tokenWasSet = elements.settingsApiToken.dataset.originallySet === "true";
+  const keepApiToken = !tokenModified && tokenWasSet;
+
   const payload = {
     baseUrl: elements.settingsBaseUrl.value.trim(),
-    apiToken: elements.settingsApiToken.value.trim(),
+    apiToken: keepApiToken ? "" : elements.settingsApiToken.value.trim(),
+    keepApiToken,
     mcpConfigPath: elements.settingsMcpPath.value.trim(),
     mcpConfigUpload,
     chatFontScale: normalizeChatFontScale(elements.settingsChatFontScale?.value),

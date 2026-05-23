@@ -2,7 +2,7 @@ const path = require("node:path");
 const express = require("express");
 const cookieParser = require("cookie-parser");
 
-const { appendAuthCookie, buildUpdatedSecurity, clearAuthCookie, hasPin, isAuthenticated, verifyPin } = require("./auth");
+const { appendAuthCookie, buildUpdatedSecurity, clearAuthCookie, hasPin, isAuthenticated, isLoginRateLimited, recordLoginAttempt, verifyPin } = require("./auth");
 const { ChatRepository } = require("./chat-repository");
 const { buildChatExport, buildDownloadName, buildMessageExport } = require("./chat-export");
 const { readConfig } = require("./config");
@@ -78,11 +78,19 @@ function createApp() {
       return;
     }
 
+    const ip = String(request.ip || "unknown");
+    if (isLoginRateLimited(ip)) {
+      response.status(429).json({ detail: "Too many failed attempts. Try again later." });
+      return;
+    }
+
     if (!verifyPin(request.body?.pin, currentConfig.Security)) {
+      recordLoginAttempt(ip, false);
       response.sendStatus(401);
       return;
     }
 
+    recordLoginAttempt(ip, true);
     appendAuthCookie(response, currentConfig.Security);
     response.json({ requireLogin: true, authenticated: true });
   });
@@ -142,13 +150,17 @@ function createApp() {
     }
 
     try {
-      saveSettings(request.appState.runtimeSettingsPath, payload, security);
+      const resolvedApiToken = payload.keepApiToken
+        ? (request.appState.config.LmStudio?.ApiToken || "")
+        : payload.apiToken;
+      const resolvedPayload = { ...payload, apiToken: resolvedApiToken };
+      saveSettings(request.appState.runtimeSettingsPath, resolvedPayload, security);
       request.appState.config = {
         ...request.appState.config,
         LmStudio: {
           ...request.appState.config.LmStudio,
           BaseUrl: payload.baseUrl,
-          ApiToken: payload.apiToken,
+          ApiToken: resolvedApiToken,
           McpConfigPath: payload.mcpConfigUpload?.content
             ? path.join(path.dirname(request.appState.runtimeSettingsPath), "mcp.uploaded.json")
             : payload.mcpConfigPath
@@ -390,7 +402,7 @@ function createApp() {
 function buildSettingsResponse(config) {
   return {
     baseUrl: config.LmStudio?.BaseUrl || "",
-    apiToken: config.LmStudio?.ApiToken || "",
+    hasApiToken: Boolean(config.LmStudio?.ApiToken),
     mcpConfigPath: config.LmStudio?.McpConfigPath || "",
     chatFontScale: config.Ui?.ChatFontScale || 1,
     requireLogin: hasPin(config.Security)
@@ -401,6 +413,7 @@ function normalizeSettingsPayload(payload) {
   return {
     baseUrl: String(payload?.baseUrl || "").trim(),
     apiToken: String(payload?.apiToken || "").trim(),
+    keepApiToken: Boolean(payload?.keepApiToken),
     mcpConfigPath: String(payload?.mcpConfigPath || "").trim(),
     mcpConfigUpload: payload?.mcpConfigUpload && typeof payload.mcpConfigUpload === "object"
       ? {
