@@ -319,15 +319,24 @@ function createApp() {
       return;
     }
 
+    const overrideSource = request.body && typeof request.body === "object" ? request.body : {};
+    const overrideRequest = normalizeChatStreamRequest(overrideSource);
+    const hasOverride = key => Object.prototype.hasOwnProperty.call(overrideSource, key);
+
+    if (hasOverride("model") && !overrideRequest.model) {
+      response.status(400).json({ error: "Model is required when provided." });
+      return;
+    }
+
     const retryRequest = {
       chatId: retryContext.chatId,
-      model: retryContext.model,
+      model: hasOverride("model") ? overrideRequest.model : retryContext.model,
       input: retryContext.input,
-      systemPrompt: retryContext.systemPrompt,
-      reasoning: retryContext.reasoning,
-      contextLength: retryContext.contextLength,
-      temperature: retryContext.temperature,
-      mcpServerIds: retryContext.mcpServerIds,
+      systemPrompt: hasOverride("systemPrompt") ? overrideRequest.systemPrompt : retryContext.systemPrompt,
+      reasoning: hasOverride("reasoning") ? overrideRequest.reasoning : retryContext.reasoning,
+      contextLength: hasOverride("contextLength") ? overrideRequest.contextLength : retryContext.contextLength,
+      temperature: hasOverride("temperature") ? overrideRequest.temperature : retryContext.temperature,
+      mcpServerIds: hasOverride("mcpServerIds") ? overrideRequest.mcpServerIds : retryContext.mcpServerIds,
       attachments: retryContext.attachments
     };
 

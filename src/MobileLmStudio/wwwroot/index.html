@@ -70,10 +70,18 @@
       </main>
 
       <form id="composer-form" class="composer">
+        <div id="chat-tools-popup" class="chat-tools-popup" hidden>
+          <div class="chat-tools-popup-head">
+            <span>MCP Tools</span>
+            <small>Override for this chat</small>
+          </div>
+          <div id="chat-tools-mcp-list" class="chip-list chat-tools-chip-list"></div>
+        </div>
         <div class="composer-main">
           <div id="composer-attachments" class="composer-attachments" hidden></div>
           <div id="composer-context-meter" class="context-meter composer-context-meter" hidden></div>
           <div class="composer-toolbar">
+            <button id="chat-tools-button" class="ghost-button attach-button icon-button" type="button" title="MCP tools" aria-label="MCP tools"></button>
             <button id="attach-button" class="ghost-button attach-button icon-button" type="button" title="Add attachment" aria-label="Add attachment"></button>
             <input id="file-input" type="file" multiple hidden />
           </div>
@@ -112,17 +120,13 @@
         <input id="settings-api-token" type="text" placeholder="Optional API token" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
       </label>
       <label class="field">
-        <span>MCP Config Path</span>
-        <input id="settings-mcp-path" type="text" placeholder="Optional path to mcp.json" />
-      </label>
-      <label class="field">
-        <span>Upload MCP Config</span>
+        <span>MCP Config</span>
         <div class="file-picker-row">
-          <button id="settings-mcp-upload-button" class="secondary-button" type="button">Choose mcp.json</button>
-          <span id="settings-mcp-upload-name" class="file-picker-label">No uploaded file selected.</span>
+          <input id="settings-mcp-path" type="text" placeholder="Optional path to mcp.json" />
+          <button id="settings-mcp-upload-button" class="ghost-button icon-button compact-icon-button" type="button" title="Upload mcp.json" aria-label="Upload mcp.json"></button>
+          <input id="settings-mcp-upload" type="file" accept=".json,application/json" hidden />
         </div>
-        <input id="settings-mcp-upload" type="file" accept=".json,application/json" hidden />
-        <small class="field-hint">Upload an mcp.json file when it is not available on a local host path. Uploaded files are stored in the app data folder and become the active MCP config.</small>
+        <span id="settings-mcp-upload-name" class="file-picker-label" hidden></span>
       </label>
       <label class="field">
         <span>Chat Text Size</span>
@@ -133,6 +137,13 @@
           <option value="1.2">Extra Large</option>
         </select>
       </label>
+      <label class="field">
+        <span>Enter Key</span>
+        <select id="settings-enter-key-behavior">
+          <option value="send">Send prompt</option>
+          <option value="newline">New line</option>
+        </select>
+      </label>
       <label class="toggle-field" for="settings-require-login">
         <input id="settings-require-login" type="checkbox" />
         <div>
@@ -140,7 +151,7 @@
           <small id="settings-pin-hint" class="field-hint">Enable this to protect the UI with a PIN.</small>
         </div>
       </label>
-      <label class="field">
+      <label class="field" hidden>
         <span>PIN</span>
         <input id="settings-pin" type="password" inputmode="numeric" autocomplete="new-password" placeholder="Leave blank to keep the current PIN" />
       </label>
@@ -203,7 +214,7 @@
           </label>
 
           <div class="mcp-section">
-            <p class="subhead">MCP Servers</p>
+            <p class="subhead">MCP Servers <small class="field-hint">— default for new chats</small></p>
             <div id="mcp-list" class="chip-list"></div>
           </div>
         </details>

@@ -8,6 +8,8 @@ const state = {
   selectedModel: "",
   selectedReasoning: "default",
   selectedMcpServerIds: new Set(),
+  enterKeyBehavior: loadEnterKeyBehavior(),
+  chatToolsPopupOpen: false,
   selectedContextLength: "",
   selectedTemperature: "",
   systemPrompt: "",
@@ -103,6 +105,10 @@ const elements = {
   settingsSaveButton: document.getElementById("settings-save-button"),
   settingsCancelButton: document.getElementById("settings-cancel-button"),
   settingsStatus: document.getElementById("settings-status"),
+  settingsEnterKeyBehavior: document.getElementById("settings-enter-key-behavior"),
+  chatToolsButton: document.getElementById("chat-tools-button"),
+  chatToolsPopup: document.getElementById("chat-tools-popup"),
+  chatToolsMcpList: document.getElementById("chat-tools-mcp-list"),
   confirmScreen: document.getElementById("confirm-screen"),
   confirmTitle: document.getElementById("confirm-title"),
   confirmMessage: document.getElementById("confirm-message"),
@@ -167,6 +173,12 @@ function bindEvents() {
     desktopLayoutMedia.addListener(syncTopBarActionsLayout);
   }
   document.addEventListener("click", event => {
+    if (state.chatToolsPopupOpen) {
+      if (!elements.chatToolsButton?.contains(event.target) && !elements.chatToolsPopup?.contains(event.target)) {
+        closeChatToolsPopup();
+      }
+    }
+
     if (!state.topBarActionsExpanded || isDesktopLayout()) {
       return;
     }
@@ -285,7 +297,41 @@ function bindEvents() {
       state.selectedMcpServerIds.add(mcpId);
     }
 
+    saveDefaultMcpServerIds(state.selectedMcpServerIds);
     renderMcpServers();
+    renderChatToolsButton();
+  });
+
+  elements.chatToolsButton?.addEventListener("click", event => {
+    event.stopPropagation();
+    toggleChatToolsPopup();
+  });
+
+  elements.chatToolsMcpList?.addEventListener("click", event => {
+    const button = event.target.closest("button[data-mcp-id]");
+    if (!button) {
+      return;
+    }
+
+    const { mcpId } = button.dataset;
+    if (!mcpId) {
+      return;
+    }
+
+    if (state.selectedMcpServerIds.has(mcpId)) {
+      state.selectedMcpServerIds.delete(mcpId);
+    } else {
+      state.selectedMcpServerIds.add(mcpId);
+    }
+
+    renderChatToolsPopup();
+    renderChatToolsButton();
+  });
+
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape" && state.chatToolsPopupOpen) {
+      closeChatToolsPopup();
+    }
   });
 
   elements.modelSelect.addEventListener("change", () => {
@@ -340,8 +386,10 @@ function bindEvents() {
   elements.messageInput.addEventListener("input", autoResizeComposer);
   elements.messageInput.addEventListener("keydown", event => {
     if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      void sendMessage();
+      if (state.enterKeyBehavior !== "newline") {
+        event.preventDefault();
+        void sendMessage();
+      }
     }
   });
 
@@ -566,7 +614,7 @@ function resetDraftConversationState() {
   state.selectedReasoning = "default";
   applySuggestedContextLength(findSelectedModel());
   state.selectedTemperature = "";
-  state.selectedMcpServerIds = new Set();
+  state.selectedMcpServerIds = normalizeSelectedMcpServerIds(loadDefaultMcpServerIds());
 }
 
 function clearComposerDraft() {
@@ -1132,6 +1180,7 @@ function renderControls() {
   elements.themeButton.setAttribute("aria-pressed", state.theme === "dark" ? "true" : "false");
   renderThemeButton();
   renderAutoScrollButton();
+  renderChatToolsButton();
 }
 
 function renderChatToolbar() {
@@ -2137,6 +2186,103 @@ function saveAutoScrollPreference(value) {
   }
 }
 
+function loadEnterKeyBehavior() {
+  try {
+    return localStorage.getItem("mls-enter-key") === "newline" ? "newline" : "send";
+  } catch {
+    return "send";
+  }
+}
+
+function saveEnterKeyBehavior(value) {
+  try {
+    localStorage.setItem("mls-enter-key", value === "newline" ? "newline" : "send");
+  } catch {
+  }
+}
+
+function loadDefaultMcpServerIds() {
+  try {
+    const saved = localStorage.getItem("mls-default-mcp-ids");
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveDefaultMcpServerIds(ids) {
+  try {
+    localStorage.setItem("mls-default-mcp-ids", JSON.stringify(Array.from(ids)));
+  } catch {
+  }
+}
+
+function toggleChatToolsPopup() {
+  if (state.chatToolsPopupOpen) {
+    closeChatToolsPopup();
+  } else {
+    openChatToolsPopup();
+  }
+}
+
+function openChatToolsPopup() {
+  if (!elements.chatToolsPopup || state.mcpServers.length === 0) {
+    return;
+  }
+
+  state.chatToolsPopupOpen = true;
+  renderChatToolsPopup();
+  elements.chatToolsPopup.hidden = false;
+}
+
+function closeChatToolsPopup() {
+  if (!elements.chatToolsPopup) {
+    return;
+  }
+
+  state.chatToolsPopupOpen = false;
+  elements.chatToolsPopup.hidden = true;
+}
+
+function renderChatToolsPopup() {
+  if (!elements.chatToolsMcpList) {
+    return;
+  }
+
+  if (state.mcpServers.length === 0) {
+    elements.chatToolsMcpList.innerHTML = '<p class="chat-preview">No MCP servers configured.</p>';
+    return;
+  }
+
+  elements.chatToolsMcpList.innerHTML = state.mcpServers
+    .map(server => {
+      const active = state.selectedMcpServerIds.has(server.id);
+      return `
+        <button type="button" class="chip${active ? " active" : ""}" data-mcp-id="${escapeAttribute(server.id)}">
+          ${escapeHtml(server.label)}
+          <small>${escapeHtml(server.transport || server.description || "configured server")}</small>
+        </button>`;
+    })
+    .join("");
+}
+
+function renderChatToolsButton() {
+  if (!elements.chatToolsButton) {
+    return;
+  }
+
+  const hasMcp = state.mcpServers.length > 0;
+  const hasActiveMcp = state.selectedMcpServerIds.size > 0;
+  elements.chatToolsButton.hidden = !hasMcp;
+  elements.chatToolsButton.classList.toggle("is-active", hasActiveMcp);
+  const count = state.selectedMcpServerIds.size;
+  const label = hasMcp
+    ? `MCP tools${count > 0 ? ` (${count} active)` : ""}`
+    : "No MCP tools configured";
+  elements.chatToolsButton.title = label;
+  elements.chatToolsButton.setAttribute("aria-label", label);
+}
+
 function toggleAutoScroll() {
   state.autoScrollEnabled = !state.autoScrollEnabled;
   saveAutoScrollPreference(state.autoScrollEnabled);
@@ -2270,6 +2416,15 @@ async function retryLatestPrompt() {
     return;
   }
 
+  const requestBody = {
+    model: state.selectedModel,
+    systemPrompt: state.systemPrompt.trim() || null,
+    reasoning: normalizeReasoningValue(),
+    contextLength: parseOptionalNumber(state.selectedContextLength),
+    temperature: parseOptionalFloat(state.selectedTemperature),
+    mcpServerIds: Array.from(normalizeSelectedMcpServerIds(Array.from(state.selectedMcpServerIds))),
+  };
+
   const pendingAssistant = {
     id: `retry_${Date.now()}`,
     role: "assistant",
@@ -2280,7 +2435,7 @@ async function retryLatestPrompt() {
     toolCalls: [],
     invalidToolCalls: [],
     attachments: [],
-    modelKey: state.currentChat?.modelKey || state.selectedModel,
+    modelKey: state.selectedModel,
     stats: null,
     createdAt: new Date().toISOString(),
     pending: true,
@@ -2296,6 +2451,12 @@ async function retryLatestPrompt() {
   }
   const expectedMessageCount = state.currentChat.messages.length + 1;
   state.currentChat.messages.push(pendingAssistant);
+  state.currentChat.modelKey = state.selectedModel;
+  state.currentChat.systemPrompt = state.systemPrompt;
+  state.currentChat.reasoning = normalizeReasoningValue();
+  state.currentChat.contextLength = parseOptionalNumber(state.selectedContextLength);
+  state.currentChat.temperature = parseOptionalFloat(state.selectedTemperature);
+  state.currentChat.selectedMcpServerIds = Array.from(normalizeSelectedMcpServerIds(Array.from(state.selectedMcpServerIds)));
   state.isSending = true;
   state.stickToBottom = state.autoScrollEnabled;
   state.streamingChatIds.add(state.currentChatId);
@@ -2312,6 +2473,8 @@ async function retryLatestPrompt() {
     const response = await fetch(`/api/chats/${encodeURIComponent(state.currentChatId)}/retry/stream`, {
       method: "POST",
       credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(requestBody),
       signal: streamController.signal,
     });
 
@@ -3033,8 +3196,22 @@ function renderMarkdownTable(headers, alignments, rows) {
 }
 
 function sanitizeMarkdownUrl(url) {
+  const trimmed = String(url || "").trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  // Decode HTML entities introduced by escapeHtml before inline parsing runs
+  const decoded = trimmed
+    .replaceAll("&amp;", "&")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#39;", "'");
+
+  // Only accept absolute URLs with a safe scheme — prevents relative-path injection
   try {
-    const parsed = new URL(String(url || "").trim(), window.location.origin);
+    const parsed = new URL(decoded);
     if (["http:", "https:", "mailto:"].includes(parsed.protocol)) {
       return parsed.href;
     }
@@ -3057,6 +3234,9 @@ async function openSettings() {
       : "Optional API token";
     elements.settingsMcpPath.value = settings.mcpConfigPath || "";
     elements.settingsChatFontScale.value = String(normalizeChatFontScale(settings.chatFontScale));
+    if (elements.settingsEnterKeyBehavior) {
+      elements.settingsEnterKeyBehavior.value = loadEnterKeyBehavior();
+    }
     if (elements.settingsMcpUpload) {
       elements.settingsMcpUpload.value = "";
     }
@@ -3129,6 +3309,9 @@ async function saveSettings() {
     }
     state.chatFontScale = normalizeChatFontScale(settings.chatFontScale);
     applyChatFontScale(state.chatFontScale);
+    const savedEnterBehavior = elements.settingsEnterKeyBehavior?.value === "newline" ? "newline" : "send";
+    saveEnterKeyBehavior(savedEnterBehavior);
+    state.enterKeyBehavior = savedEnterBehavior;
     renderSelectedMcpConfigLabel(settings.mcpConfigPath);
     renderSettingsSecurityState();
 
@@ -3152,6 +3335,10 @@ function renderSettingsSecurityState() {
 
   const enabled = elements.settingsRequireLogin.checked;
   const hasExistingPin = elements.settingsPin.dataset.hasExistingPin === "true";
+  const pinField = elements.settingsPin.closest("label.field");
+  if (pinField) {
+    pinField.hidden = !enabled;
+  }
   elements.settingsPin.disabled = !enabled;
   elements.settingsPin.placeholder = enabled
     ? hasExistingPin
@@ -3186,15 +3373,12 @@ function renderSelectedMcpConfigLabel(currentPath = "") {
   const selectedFile = elements.settingsMcpUpload?.files?.[0];
   if (selectedFile) {
     elements.settingsMcpUploadName.textContent = `Selected upload: ${selectedFile.name}`;
+    elements.settingsMcpUploadName.hidden = false;
     return;
   }
 
-  if (currentPath) {
-    elements.settingsMcpUploadName.textContent = `Current source: ${currentPath}`;
-    return;
-  }
-
-  elements.settingsMcpUploadName.textContent = "No uploaded file selected.";
+  elements.settingsMcpUploadName.textContent = "";
+  elements.settingsMcpUploadName.hidden = true;
 }
 
 function dismissConfigBanner() {
@@ -3328,7 +3512,9 @@ function renderActionIcons() {
   setButtonIcon(elements.deleteChatButton, "trash");
   setButtonIcon(elements.settingsButton, "gear");
   setButtonIcon(elements.logoutButton, "lock");
+  setButtonIcon(elements.chatToolsButton, "tools");
   setButtonIcon(elements.attachButton, "paperclip");
+  setButtonIcon(elements.settingsMcpUploadButton, "paperclip");
   setButtonIcon(elements.configBannerDismiss, "close");
   setButtonIcon(elements.modelRefreshButton, "refresh");
   renderThemeButton();
@@ -3391,6 +3577,8 @@ function renderIcon(iconName) {
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10"></path><path d="M4 12h10"></path><path d="M4 17h6"></path><path d="M18 9v8"></path><path d="m15 14 3 3 3-3"></path></svg>';
     case "autoscrollOff":
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10"></path><path d="M4 12h10"></path><path d="M4 17h6"></path><path d="M18 9v8"></path><path d="m15 14 3 3 3-3"></path><path d="M5 5l14 14"></path></svg>';
+    case "tools":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>';
     default:
       return "";
   }

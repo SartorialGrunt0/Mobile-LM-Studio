@@ -1050,6 +1050,7 @@ body.drawer-open .drawer-backdrop {
 }
 
 .composer {
+  position: relative;
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 0.5rem;
@@ -1110,11 +1111,58 @@ body.drawer-open .drawer-backdrop {
   min-height: 44px;
 }
 
+.chat-tools-popup {
+  position: absolute;
+  bottom: calc(100% + 0.35rem);
+  left: 0.5rem;
+  right: 0.5rem;
+  max-width: 340px;
+  z-index: 30;
+  background: var(--surface-card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 0.75rem;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.14);
+}
+
+.chat-tools-popup-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.55rem;
+}
+
+.chat-tools-popup-head > span {
+  font-weight: 600;
+  font-size: 0.88rem;
+}
+
+.chat-tools-popup-head > small {
+  color: var(--muted);
+  font-size: 0.77rem;
+}
+
+.chat-tools-chip-list .chip {
+  min-height: 36px;
+  padding: 0.4rem 0.7rem;
+  font-size: 0.84rem;
+}
+
+.attach-button.is-active {
+  color: var(--accent-strong);
+  border-color: rgba(23, 107, 127, 0.3);
+  background: rgba(23, 107, 127, 0.1);
+}
+
 .file-picker-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.6rem;
   align-items: center;
+}
+
+.file-picker-row > input {
+  min-width: 0;
 }
 
 .file-picker-label {
@@ -1348,6 +1396,8 @@ body.drawer-open .drawer-backdrop {
   background: var(--panel-strong);
   box-shadow: var(--shadow);
   border: 1px solid var(--border);
+  max-height: calc(100dvh - 2rem);
+  overflow-y: auto;
 }
 
 .confirm-card {
@@ -1498,10 +1548,6 @@ body.drawer-open .drawer-backdrop {
 
   .send-button {
     width: auto;
-  }
-
-  .file-picker-row {
-    grid-template-columns: 1fr;
   }
 
   .message-attachment.image,
