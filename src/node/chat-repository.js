@@ -202,6 +202,18 @@ ORDER BY created_utc ASC;
     };
   }
 
+  deleteLastAssistantMessage(chatId) {
+    const row = this.db.prepare(`
+SELECT id FROM messages
+WHERE chat_id = ? AND role = 'assistant'
+ORDER BY created_utc DESC, rowid DESC
+LIMIT 1;
+`).get(chatId);
+    if (row) {
+      this.db.prepare("DELETE FROM messages WHERE id = ?;").run(row.id);
+    }
+  }
+
   updateTitle(chatId, title) {
     this.db.prepare("UPDATE chats SET title = ?, updated_utc = ? WHERE id = ?;").run(title, nowIso(), chatId);
   }

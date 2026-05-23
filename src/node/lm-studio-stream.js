@@ -63,7 +63,52 @@ function captureFinalResponse(eventType, payload, current) {
   }
 }
 
-function buildAssistantPersistence(response, modelKey, contextLength) {
+function firstFiniteNumber(...values) {
+  for (const value of values) {
+    const numeric = typeof value === "number" ? value : Number(value);
+    if (Number.isFinite(numeric)) {
+      return numeric;
+    }
+  }
+
+  return null;
+}
+
+function resolveResponseContextLimit(response, requestedContextLength) {
+  return firstFiniteNumber(
+    response?.modelInfo?.contextLength,
+    response?.model_info?.context_length,
+    response?.model?.contextLength,
+    response?.model?.context_length,
+    requestedContextLength
+  );
+}
+
+function normalizeResponseStats(response, requestedContextLength, overrides = {}) {
+  const stats = response?.stats;
+  if (!stats) {
+    return null;
+  }
+
+  const totalOutputTokens = firstFiniteNumber(stats.totalOutputTokens, stats.total_output_tokens);
+  const reasoningOutputTokens = firstFiniteNumber(stats.reasoningOutputTokens, stats.reasoning_output_tokens);
+
+  return {
+    inputTokens: firstFiniteNumber(stats.inputTokens, stats.input_tokens),
+    totalOutputTokens,
+    answerOutputTokens: typeof totalOutputTokens === "number"
+      ? Math.max(totalOutputTokens - (typeof reasoningOutputTokens === "number" ? reasoningOutputTokens : 0), 0)
+      : null,
+    reasoningOutputTokens,
+    tokensPerSecond: firstFiniteNumber(stats.tokensPerSecond, stats.tokens_per_second),
+    timeToFirstTokenSeconds: firstFiniteNumber(stats.timeToFirstTokenSeconds, stats.time_to_first_token_seconds),
+    modelLoadTimeSeconds: firstFiniteNumber(stats.modelLoadTimeSeconds, stats.model_load_time_seconds),
+    totalTimeSeconds: firstFiniteNumber(overrides.totalTimeSeconds, stats.totalTimeSeconds, stats.total_time_seconds),
+    contextLimit: resolveResponseContextLimit(response, requestedContextLength)
+  };
+}
+
+function buildAssistantPersistence(response, modelKey, contextLength, options = {}) {
   const outputItems = Array.isArray(response?.output) ? response.output : [];
   const messages = [];
   const reasoning = [];
@@ -112,17 +157,7 @@ function buildAssistantPersistence(response, modelKey, contextLength) {
     reasoning: reasoning.length > 0 ? reasoning.join("\n\n").trim() : null,
     toolCalls,
     invalidToolCalls,
-    stats: response?.stats
-      ? {
-          inputTokens: response.stats.input_tokens,
-          totalOutputTokens: response.stats.total_output_tokens,
-          reasoningOutputTokens: response.stats.reasoning_output_tokens,
-          tokensPerSecond: response.stats.tokens_per_second,
-          timeToFirstTokenSeconds: response.stats.time_to_first_token_seconds,
-          modelLoadTimeSeconds: response.stats.model_load_time_seconds ?? null,
-          contextLimit: contextLength ?? null
-        }
-      : null,
+    stats: normalizeResponseStats(response, contextLength, options),
     responseId: response?.response_id ?? null,
     modelKey
   };

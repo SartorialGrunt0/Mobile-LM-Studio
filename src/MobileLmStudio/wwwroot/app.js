@@ -26,6 +26,16 @@ const state = {
   editDraftContent: "",
   chatFontScale: 1,
   topBarActionsExpanded: false,
+  autoScrollEnabled: loadAutoScrollPreference(),
+  contextLengthManual: false,
+  pendingScrollFrame: 0,
+  modelLoadMode: "load",
+  serverStreamPollTimer: null,
+  serverStreamPollChatId: null,
+  streamingChatIds: new Set(),
+  streamControllers: new Map(),
+  currentStreamController: null,
+  currentStreamChatId: null,
 };
 
 const elements = {
@@ -50,6 +60,7 @@ const elements = {
   currentChatTitle: document.getElementById("current-chat-title"),
   exportChatButton: document.getElementById("export-chat-button"),
   deleteChatButton: document.getElementById("delete-chat-button"),
+  autoScrollButton: document.getElementById("auto-scroll-button"),
   modelSelect: document.getElementById("model-select"),
   loadModelButton: document.getElementById("load-model-button"),
   unloadModelButton: document.getElementById("unload-model-button"),
@@ -100,6 +111,11 @@ const elements = {
 };
 
 const desktopLayoutMedia = window.matchMedia("(min-width: 960px)");
+const ESTIMATED_CHARS_PER_TOKEN = 4;
+const ESTIMATED_MESSAGE_OVERHEAD_TOKENS = 6;
+const ESTIMATED_SYSTEM_PROMPT_OVERHEAD_TOKENS = 8;
+const ESTIMATED_TOOL_CALL_OVERHEAD_TOKENS = 10;
+const ESTIMATED_IMAGE_ATTACHMENT_TOKENS = 256;
 
 applyTheme(loadThemePreference());
 renderActionIcons();
@@ -112,9 +128,15 @@ async function initialize() {
 
   try {
     await refreshBootstrap();
-    if (state.bootstrap.authenticated) {
+    // Auto-lock on page reload when a PIN is configured
+    if (state.bootstrap.requireLogin && state.bootstrap.authenticated) {
+      try {
+        const resp = await fetchJson("/api/auth/logout", { method: "POST", suppressAuthRedirect: true });
+        state.bootstrap = { ...state.bootstrap, requireLogin: resp.requireLogin, authenticated: resp.authenticated };
+      } catch { }
+    } else if (state.bootstrap.authenticated) {
       const warnings = await loadAuthenticatedData();
-      if (warnings.length === 0) {
+      if (warnings.length === 0 && !state.serverStreamPollTimer) {
         setStatus("Ready", "neutral");
       }
     }
@@ -156,20 +178,14 @@ function bindEvents() {
     collapseTopBarActions();
   });
 
-  elements.modelButton.addEventListener("click", () => {
-    collapseTopBarActions();
-    openModelMenu();
-  });
+  elements.modelButton.addEventListener("click", () => openModelMenu());
   elements.modelCloseButton.addEventListener("click", () => closeModelMenu());
   elements.modelScreen.addEventListener("click", event => {
     if (event.target === elements.modelScreen) {
       closeModelMenu();
     }
   });
-  elements.themeButton.addEventListener("click", () => {
-    collapseTopBarActions();
-    toggleTheme();
-  });
+  elements.themeButton.addEventListener("click", () => toggleTheme());
   elements.newChatButton.addEventListener("click", () => {
     collapseTopBarActions();
     startNewDraft({ resetConversationSettings: true });
@@ -181,6 +197,8 @@ function bindEvents() {
   });
   elements.configBannerDismiss?.addEventListener("click", () => dismissConfigBanner());
   elements.messageScroll.addEventListener("scroll", () => updateStickToBottom());
+  elements.messageList.addEventListener("load", event => handleDeferredMediaLoad(event), true);
+  elements.composerAttachments.addEventListener("load", event => handleDeferredMediaLoad(event), true);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) {
       void recoverInterruptedStream();
@@ -192,6 +210,7 @@ function bindEvents() {
   window.addEventListener("pageshow", () => {
     void recoverInterruptedStream();
   });
+  window.addEventListener("load", () => renderMathInMarkdown(elements.messageList));
 
   elements.chatList.addEventListener("click", event => {
     const deleteButton = event.target.closest("button[data-delete-chat-id]");
@@ -270,17 +289,20 @@ function bindEvents() {
   });
 
   elements.modelSelect.addEventListener("change", () => {
+    const previousModel = findSelectedModel();
+    const shouldFollowSuggestion = shouldUseSuggestedContext(previousModel);
     state.selectedModel = elements.modelSelect.value;
-    if (!state.selectedContextLength) {
-      state.selectedContextLength = String(suggestContextLength(findSelectedModel()));
-      elements.contextLengthInput.value = state.selectedContextLength;
+    if (shouldFollowSuggestion) {
+      applySuggestedContextLength(findSelectedModel());
     }
+    elements.contextLengthInput.value = state.selectedContextLength;
     normalizeReasoningSelection();
     renderModelDetails();
   });
 
   elements.contextLengthInput.addEventListener("input", () => {
-    state.selectedContextLength = elements.contextLengthInput.value.trim();
+    syncContextLengthInput(elements.contextLengthInput.value.trim());
+    renderModelDetails();
   });
 
   elements.temperatureInput?.addEventListener("input", () => {
@@ -293,6 +315,13 @@ function bindEvents() {
 
   elements.systemPromptInput.addEventListener("input", () => {
     state.systemPrompt = elements.systemPromptInput.value;
+  });
+
+  elements.sendButton.addEventListener("click", event => {
+    if (isCurrentChatActivelyStreaming()) {
+      event.preventDefault();
+      stopStream();
+    }
   });
 
   elements.composerForm.addEventListener("submit", event => {
@@ -319,18 +348,10 @@ function bindEvents() {
   elements.loadModelButton.addEventListener("click", () => void loadSelectedModel());
   elements.unloadModelButton.addEventListener("click", () => void unloadSelectedModel());
   elements.modelRefreshButton?.addEventListener("click", () => void refreshModels());
-  elements.exportChatButton.addEventListener("click", () => {
-    collapseTopBarActions();
-    void exportCurrentChat();
-  });
-  elements.deleteChatButton.addEventListener("click", () => {
-    collapseTopBarActions();
-    promptDeleteChat(state.currentChatId);
-  });
-  elements.logoutButton.addEventListener("click", () => {
-    collapseTopBarActions();
-    void logout();
-  });
+  elements.exportChatButton.addEventListener("click", () => void exportCurrentChat());
+  elements.deleteChatButton.addEventListener("click", () => promptDeleteChat(state.currentChatId));
+  elements.autoScrollButton?.addEventListener("click", () => toggleAutoScroll());
+  elements.logoutButton.addEventListener("click", () => void logout());
 
   elements.loginForm.addEventListener("submit", event => {
     event.preventDefault();
@@ -349,10 +370,7 @@ function bindEvents() {
   });
   elements.settingsRequireLogin?.addEventListener("change", () => renderSettingsSecurityState());
 
-  elements.settingsButton.addEventListener("click", () => {
-    collapseTopBarActions();
-    openSettings();
-  });
+  elements.settingsButton.addEventListener("click", () => openSettings());
   elements.confirmCancelButton?.addEventListener("click", () => closeConfirmDialog());
   elements.confirmAcceptButton?.addEventListener("click", () => void confirmPendingAction());
   elements.confirmScreen?.addEventListener("click", event => {
@@ -424,6 +442,16 @@ async function loadAuthenticatedData() {
     render();
   }
 
+  if (state.currentChatId) {
+    try {
+      const streamsData = await fetchJson("/api/chats/active-streams");
+      if ((streamsData.chatIds || []).includes(state.currentChatId)) {
+        startStreamWaitPolling(state.currentChatId);
+      }
+    } catch {
+    }
+  }
+
   if (warnings.length > 0) {
     setStatus(warnings[0], "error");
   }
@@ -492,7 +520,7 @@ function ensureSelectionDefaults() {
   }
 
   if (!state.selectedContextLength) {
-    state.selectedContextLength = String(suggestContextLength(findSelectedModel()));
+    applySuggestedContextLength(findSelectedModel());
   }
 
   normalizeReasoningSelection();
@@ -500,13 +528,14 @@ function ensureSelectionDefaults() {
 
 function startNewDraft(options = {}) {
   const { resetConversationSettings = false } = options;
+  stopStreamWaitPolling();
   ensureSelectionDefaults();
   if (resetConversationSettings) {
     resetDraftConversationState();
   }
   state.currentChatId = null;
   state.pendingStreamRecoveryChatId = null;
-  state.stickToBottom = true;
+  state.stickToBottom = state.autoScrollEnabled;
   state.currentChat = {
     id: null,
     title: "New Chat",
@@ -523,7 +552,7 @@ function startNewDraft(options = {}) {
 function resetDraftConversationState() {
   state.systemPrompt = "";
   state.selectedReasoning = "default";
-  state.selectedContextLength = String(suggestContextLength(findSelectedModel()));
+  applySuggestedContextLength(findSelectedModel());
   state.selectedTemperature = "";
   state.selectedMcpServerIds = new Set();
 }
@@ -537,6 +566,7 @@ function clearComposerDraft() {
 }
 
 async function openChat(chatId, suppressStatus = false) {
+  stopStreamWaitPolling();
   try {
     state.currentChat = await fetchJson(`/api/chats/${encodeURIComponent(chatId)}`);
     state.currentChatId = state.currentChat.id;
@@ -544,15 +574,28 @@ async function openChat(chatId, suppressStatus = false) {
     state.selectedModel = state.currentChat.modelKey || loadedModel?.key || state.selectedModel;
     state.systemPrompt = state.currentChat.systemPrompt || "";
     state.selectedReasoning = state.currentChat.reasoning || "default";
-    state.selectedContextLength = state.currentChat.contextLength ? String(state.currentChat.contextLength) : String(suggestContextLength(findSelectedModel()));
+    if (state.currentChat.contextLength) {
+      setContextLengthValue(state.currentChat.contextLength, { manual: true });
+    } else {
+      applySuggestedContextLength(findSelectedModel());
+    }
     state.selectedTemperature = typeof state.currentChat.temperature === "number" ? String(state.currentChat.temperature) : "";
     state.selectedMcpServerIds = normalizeSelectedMcpServerIds(state.currentChat.selectedMcpServerIds || []);
-    state.stickToBottom = true;
+    state.stickToBottom = state.autoScrollEnabled;
     normalizeReasoningSelection();
     render();
     syncMessageScroll(true);
     autoResizeComposer();
     setDrawerOpen(false);
+
+    if (!state.streamingChatIds.has(chatId)) {
+      try {
+        const streamsData = await fetchJson("/api/chats/active-streams");
+        if ((streamsData.chatIds || []).includes(chatId)) {
+          startStreamWaitPolling(chatId);
+        }
+      } catch { }
+    }
 
     if (!suppressStatus) {
       setStatus(`Opened ${state.currentChat.title}.`, "neutral");
@@ -574,7 +617,13 @@ async function loadSelectedModel() {
     return;
   }
 
-  if ((selectedModel.loadedInstances || []).length > 0) {
+  const loadedInstances = selectedModel.loadedInstances || [];
+  if (loadedInstances.length > 0) {
+    if (doesSelectedContextRequireReload(selectedModel)) {
+      await executeModelLoad(selectedModel.key, loadedInstances.map(instance => instance.id), "reload");
+      return;
+    }
+
     renderModelDetails();
     return;
   }
@@ -598,13 +647,19 @@ async function loadSelectedModel() {
   await executeModelLoad(selectedModel.key);
 }
 
-async function executeModelLoad(modelKey, unloadInstanceIds = []) {
+async function executeModelLoad(modelKey, unloadInstanceIds = [], loadMode = unloadInstanceIds.length > 0 ? "switch" : "load") {
   state.isModelLoading = true;
   state.modelLoadTarget = modelKey;
+  state.modelLoadMode = loadMode;
   renderControls();
 
   try {
-    setStatus(unloadInstanceIds.length > 0 ? "Switching models..." : "Loading model...", "busy");
+    const statusText = loadMode === "reload"
+      ? "Reloading model..."
+      : unloadInstanceIds.length > 0
+        ? "Switching models..."
+        : "Loading model...";
+    setStatus(statusText, "busy");
     for (const instanceId of unloadInstanceIds) {
       await fetchJson("/api/models/unload", {
         method: "POST",
@@ -622,12 +677,13 @@ async function executeModelLoad(modelKey, unloadInstanceIds = []) {
     });
 
     await refreshModels();
-    setStatus("Model loaded.", "neutral");
+    setStatus(loadMode === "reload" ? "Model reloaded." : "Model loaded.", "neutral");
   } catch (error) {
     setStatus(error.message || "Unable to load the selected model.", "error");
   } finally {
     state.isModelLoading = false;
     state.modelLoadTarget = "";
+    state.modelLoadMode = "load";
     renderControls();
   }
 }
@@ -657,9 +713,14 @@ async function unloadSelectedModel() {
 }
 
 async function refreshModels() {
+  const previousModelKey = state.selectedModel;
+  const shouldFollowSuggestion = shouldUseSuggestedContext(findSelectedModel());
   const payload = await fetchJson("/api/models");
   state.models = payload.models || [];
   ensureSelectionDefaults();
+  if (shouldFollowSuggestion || previousModelKey !== state.selectedModel) {
+    applySuggestedContextLength(findSelectedModel());
+  }
   render();
 }
 
@@ -669,7 +730,7 @@ async function refreshChats() {
 }
 
 async function sendMessage() {
-  if (state.isSending) {
+  if (isCurrentChatActivelyStreaming()) {
     return;
   }
 
@@ -705,6 +766,8 @@ async function sendMessage() {
     role: "assistant",
     content: "",
     reasoning: "",
+    thinkingActive: false,
+    requestStartedAtMs: Date.now(),
     toolCalls: [],
     invalidToolCalls: [],
     stats: null,
@@ -737,12 +800,19 @@ async function sendMessage() {
   state.currentChat.temperature = parseOptionalFloat(state.selectedTemperature);
   state.currentChat.selectedMcpServerIds = Array.from(state.selectedMcpServerIds);
   state.isSending = true;
-  state.stickToBottom = true;
+  state.stickToBottom = state.autoScrollEnabled;
+  state.streamingChatIds.add(state.currentChatId);
+  initializePendingUsageEstimate(pendingAssistant);
   elements.messageInput.value = "";
   state.composerAttachments = [];
   autoResizeComposer();
   setStatus("Waiting for LM Studio...", "busy");
   render();
+
+  const streamController = new AbortController();
+  state.currentStreamController = streamController;
+  state.currentStreamChatId = state.currentChatId || null;
+  state.streamControllers.set(state.currentChatId, streamController);
 
   try {
     const response = await fetch("/api/chats/stream", {
@@ -752,6 +822,7 @@ async function sendMessage() {
         "Content-Type": "application/json",
       },
       body: JSON.stringify(requestBody),
+      signal: streamController.signal,
     });
 
     if (response.status === 401) {
@@ -765,8 +836,13 @@ async function sendMessage() {
 
     const newChatId = response.headers.get("X-Chat-Id");
     if (newChatId) {
+      state.streamingChatIds.delete(state.currentChatId);
+      state.streamControllers.delete(state.currentChatId);
       state.currentChatId = newChatId;
       state.currentChat.id = newChatId;
+      state.currentStreamChatId = newChatId;
+      state.streamingChatIds.add(newChatId);
+      state.streamControllers.set(newChatId, streamController);
     }
 
     const wasNewChat = requestBody.chatId === null;
@@ -785,6 +861,15 @@ async function sendMessage() {
 
     setStatus("Response complete.", "neutral");
   } catch (error) {
+    if (error?.name === "AbortError") {
+      setStatus("Stopped.", "neutral");
+      if (state.currentChatId) {
+        try { await openChat(state.currentChatId, true); } catch { }
+      } else if (state.currentChat?.messages) {
+        state.currentChat.messages = state.currentChat.messages.filter(m => m.id !== pendingAssistant.id);
+      }
+      return;
+    }
     if (await tryRecoverStreamFailure(error, expectedMessageCount)) {
       return;
     }
@@ -795,7 +880,14 @@ async function sendMessage() {
     setStatus(error.message || "The request failed.", "error");
     renderMessages();
   } finally {
-    state.isSending = false;
+    const finalStreamId = state.currentStreamChatId;
+    state.currentStreamController = null;
+    state.currentStreamChatId = null;
+    state.streamingChatIds.delete(finalStreamId);
+    state.streamingChatIds.delete(null);
+    state.streamControllers.delete(finalStreamId);
+    state.streamControllers.delete(null);
+    state.isSending = state.streamingChatIds.size > 0 || state.serverStreamPollChatId !== null;
     render();
   }
 }
@@ -804,6 +896,7 @@ function applyStreamEvent(event, pendingAssistant) {
   switch (event.type) {
     case "chat.start":
       pendingAssistant.modelKey = resolveModelKeyFromInstanceId(event.data.model_instance_id) || pendingAssistant.modelKey || state.selectedModel;
+      pendingAssistant.thinkingActive = false;
       setStatus("Connected to LM Studio.", "busy");
       break;
     case "model_load.start":
@@ -822,48 +915,59 @@ function applyStreamEvent(event, pendingAssistant) {
       setStatus(`Processing prompt ${Math.round((event.data.progress || 0) * 100)}%.`, "busy");
       break;
     case "reasoning.delta":
+      pendingAssistant.thinkingActive = true;
       pendingAssistant.reasoning = `${pendingAssistant.reasoning || ""}${event.data.content || ""}`;
-      renderMessages(true);
+      refreshPendingUsageEstimate(pendingAssistant);
+      renderMessages();
       break;
     case "message.delta":
+      pendingAssistant.thinkingActive = false;
       pendingAssistant.content = `${pendingAssistant.content || ""}${event.data.content || ""}`;
-      renderMessages(true);
+      refreshPendingUsageEstimate(pendingAssistant);
+      renderMessages();
       break;
     case "tool_call.start":
+      pendingAssistant.thinkingActive = false;
       pendingAssistant.toolCalls.push({
         tool: event.data.tool || "tool",
         argumentsJson: "{}",
         output: "",
         provider: event.data.providerInfo || null,
       });
-      renderMessages(true);
+      refreshPendingUsageEstimate(pendingAssistant);
+      renderMessages();
       break;
     case "tool_call.arguments": {
       const currentTool = pendingAssistant.toolCalls[pendingAssistant.toolCalls.length - 1];
       if (currentTool) {
         currentTool.argumentsJson = JSON.stringify(event.data.arguments || {}, null, 2);
       }
-      renderMessages(true);
+      refreshPendingUsageEstimate(pendingAssistant);
+      renderMessages();
       break;
     }
     case "tool_call.success": {
+      pendingAssistant.thinkingActive = false;
       const currentTool = pendingAssistant.toolCalls[pendingAssistant.toolCalls.length - 1];
       if (currentTool) {
         currentTool.output = event.data.output || "";
       }
-      renderMessages(true);
+      refreshPendingUsageEstimate(pendingAssistant);
+      renderMessages();
       break;
     }
     case "tool_call.failure":
+      pendingAssistant.thinkingActive = false;
       pendingAssistant.invalidToolCalls.push({
         reason: "Tool call failed",
         metadataJson: JSON.stringify(event.data, null, 2),
       });
-      renderMessages(true);
+      refreshPendingUsageEstimate(pendingAssistant);
+      renderMessages();
       break;
     case "chat.end":
       applyFinalResponse(pendingAssistant, event.data);
-      renderMessages(true);
+      renderMessages();
       break;
     case "error":
       throw new Error(describeLmStudioError(event.data?.message || "The LM Studio stream returned an error."));
@@ -911,17 +1015,11 @@ function applyFinalResponse(message, data) {
   message.toolCalls = toolCalls.length > 0 ? toolCalls : message.toolCalls;
   message.invalidToolCalls = invalidToolCalls.length > 0 ? invalidToolCalls : message.invalidToolCalls;
   message.modelKey = resolveModelKeyFromInstanceId(result.model_instance_id) || message.modelKey || state.selectedModel;
-  message.stats = result.stats
-    ? {
-        inputTokens: result.stats.inputTokens,
-        totalOutputTokens: result.stats.totalOutputTokens,
-        reasoningOutputTokens: result.stats.reasoningOutputTokens,
-        tokensPerSecond: result.stats.tokensPerSecond,
-        timeToFirstTokenSeconds: result.stats.timeToFirstTokenSeconds,
-        modelLoadTimeSeconds: result.stats.modelLoadTimeSeconds,
-        contextLimit: parseOptionalNumber(state.selectedContextLength),
-      }
-    : null;
+  message.stats = normalizeStreamStats(result, message.modelKey || state.selectedModel);
+  if (message.stats && typeof message.stats.totalTimeSeconds !== "number" && typeof message.requestStartedAtMs === "number") {
+    message.stats.totalTimeSeconds = Math.max((Date.now() - message.requestStartedAtMs) / 1000, 0);
+  }
+  message.thinkingActive = false;
   message.pending = false;
 
   if (message.stats) {
@@ -947,7 +1045,7 @@ function render() {
 function renderAuthState() {
   const authenticated = !state.bootstrap?.requireLogin || state.bootstrap?.authenticated;
   elements.loginScreen.hidden = authenticated;
-  elements.logoutButton.hidden = !state.bootstrap?.requireLogin;
+  elements.logoutButton.hidden = true;
   elements.connectionPill.className = `connection-pill${state.isSending ? " busy" : authenticated ? " online" : ""}`;
   elements.connectionPill.textContent = state.isSending ? "Streaming" : authenticated ? "Connected" : "Locked";
 }
@@ -1005,11 +1103,23 @@ function renderControls() {
     elements.temperatureInput.value = state.selectedTemperature;
   }
   const locked = !state.bootstrap?.authenticated && state.bootstrap?.requireLogin;
-  elements.sendButton.disabled = state.isSending || locked || !state.selectedModel;
-  elements.messageInput.disabled = state.isSending || locked;
-  elements.attachButton.disabled = state.isSending || locked;
+  const isActive = isCurrentChatActivelyStreaming();
+  if (isActive) {
+    elements.sendButton.textContent = "Stop";
+    elements.sendButton.disabled = false;
+    elements.sendButton.classList.add("danger-button");
+    elements.sendButton.classList.remove("primary-button");
+  } else {
+    elements.sendButton.textContent = "Send";
+    elements.sendButton.disabled = locked || !state.selectedModel;
+    elements.sendButton.classList.remove("danger-button");
+    elements.sendButton.classList.add("primary-button");
+  }
+  elements.messageInput.disabled = isActive || locked;
+  elements.attachButton.disabled = isActive || locked;
   elements.themeButton.setAttribute("aria-pressed", state.theme === "dark" ? "true" : "false");
   renderThemeButton();
+  renderAutoScrollButton();
 }
 
 function renderChatToolbar() {
@@ -1083,6 +1193,8 @@ function renderModelDetails() {
   }
 
   const loadedCount = (model.loadedInstances || []).length;
+  const loadedContextLength = getLoadedContextLength(model);
+  const reloadRequired = doesSelectedContextRequireReload(model);
   const isLoadingSelected = state.isModelLoading && state.modelLoadTarget === model.key;
   const otherLoadedModels = getLoadedModels(model.key);
   const capabilityParts = [];
@@ -1101,16 +1213,19 @@ function renderModelDetails() {
     model.displayName && model.displayName !== model.key ? `key: ${model.key}` : null,
     loadedCount > 0 ? `${loadedCount} instance loaded` : otherLoadedModels.length > 0 ? `${otherLoadedModels.length} other model loaded` : "auto-load on send",
     model.paramsString || model.architecture || "",
+    loadedContextLength ? `${formatInteger(loadedContextLength)} loaded ctx` : null,
     `${formatInteger(model.maxContextLength)} max ctx`,
     capabilityParts.join(" • "),
   ].filter(Boolean);
 
   elements.modelMeta.textContent = metaParts.join(" • ");
-  elements.loadModelButton.disabled = state.isModelLoading || loadedCount > 0;
+  elements.loadModelButton.disabled = state.isModelLoading || (loadedCount > 0 && !reloadRequired);
   elements.loadModelButton.innerHTML = isLoadingSelected
-    ? '<span class="button-content"><span class="button-spinner" aria-hidden="true"></span><span>Loading...</span></span>'
+    ? `<span class="button-content"><span class="button-spinner" aria-hidden="true"></span><span>${escapeHtml(state.modelLoadMode === "reload" ? "Reloading..." : "Loading...")}</span></span>`
     : loadedCount > 0
-      ? "Loaded"
+      ? reloadRequired
+        ? "Reload"
+        : "Loaded"
       : "Load";
   elements.unloadModelButton.disabled = state.isModelLoading || loadedCount === 0;
 }
@@ -1140,22 +1255,25 @@ function renderChatList() {
   }
 
   elements.chatList.innerHTML = state.chats
-    .map(chat => `
-      <article class="chat-item${chat.id === state.currentChatId ? " active" : ""}">
+    .map(chat => {
+      const isStreaming = state.streamingChatIds.has(chat.id) || state.serverStreamPollChatId === chat.id;
+      return `
+      <article class="chat-item${chat.id === state.currentChatId ? " active" : ""}${isStreaming ? " streaming" : ""}">
         <button type="button" class="chat-open" data-chat-id="${escapeAttribute(chat.id)}">
           <span class="chat-title">${escapeHtml(chat.title)}</span>
           <span class="chat-meta">${escapeHtml(chat.modelKey)} • ${escapeHtml(formatRelativeDate(chat.updatedAt))}</span>
           <span class="chat-preview">${escapeHtml(chat.preview || "Saved chat")}</span>
         </button>
         <button type="button" class="chat-delete" data-delete-chat-id="${escapeAttribute(chat.id)}" aria-label="Delete ${escapeAttribute(chat.title)}" title="Delete ${escapeAttribute(chat.title)}">${renderIcon("trash")}</button>
-      </article>`)
+      </article>`;
+    })
     .join("");
 }
 
 function renderMessages(forceScroll = false) {
   const messages = state.currentChat?.messages || [];
   const hasMessages = messages.length > 0;
-  const shouldStick = forceScroll || state.stickToBottom || isMessageScrollNearBottom();
+  const shouldStick = forceScroll || (state.autoScrollEnabled && (state.stickToBottom || isMessageScrollNearBottom()));
 
   if (state.editingMessageId) {
     const editTextarea = elements.messageList.querySelector(".message-edit-textarea");
@@ -1169,6 +1287,7 @@ function renderMessages(forceScroll = false) {
   elements.emptyState.hidden = hasMessages;
   elements.messageList.innerHTML = hasMessages ? messages.map(renderMessageCard).join("") : "";
   restoreOpenDetails(openDetailsStates);
+  renderMathInMarkdown(elements.messageList);
 
   if (state.editingMessageId) {
     const editTextarea = elements.messageList.querySelector(".message-edit-textarea");
@@ -1223,13 +1342,13 @@ function renderMessageCard(message) {
     : message.content
       ? `<div class="message-body markdown-body">${renderMarkdown(message.content)}</div>`
       : message.pending
-        ? '<div class="message-body">Waiting for tokens...</div>'
+        ? `<div class="message-body">${message.thinkingActive ? "Generating reasoning..." : "Waiting for tokens..."}</div>`
         : "";
 
   const reasoningBlock = message.reasoning
     ? `
-      <details class="details-block" data-details-id="${escapeAttribute(message.id)}-reasoning">
-        <summary>Thinking</summary>
+      <details class="details-block thinking-block${message.thinkingActive ? " active" : ""}" data-details-id="${escapeAttribute(message.id)}-reasoning">
+        <summary><span>Thinking</span>${message.thinkingActive ? '<span class="thinking-indicator"><span class="thinking-indicator-dot" aria-hidden="true"></span>Live</span>' : ""}</summary>
         <div class="details-body markdown-body">${renderMarkdown(message.reasoning)}</div>
       </details>`
     : "";
@@ -1257,22 +1376,12 @@ function renderMessageCard(message) {
       </details>`
     : "";
 
-  const statsBlock = message.stats
-    ? `
-      <div class="stats-row">
-        <span>${escapeHtml(`${formatNumber(message.stats.tokensPerSecond)} tok/s`)}</span>
-        <span class="divider">•</span>
-        <span>${escapeHtml(`${formatInteger(message.stats.inputTokens)} ctx`)}</span>
-        <span class="divider">•</span>
-        <span>${escapeHtml(`${formatInteger(message.stats.totalOutputTokens)} out`)}</span>
-        ${message.stats.reasoningOutputTokens ? `<span class="divider">•</span><span>${escapeHtml(`${formatInteger(message.stats.reasoningOutputTokens)} think`)}</span>` : ""}
-      </div>`
-    : "";
+  const statsBlock = message.stats && !message.pending && !message.stats.isEstimated ? renderMessageStats(message.stats) : "";
 
   const contextBlock = "";
   const canExport = Boolean(state.currentChatId) && !message.pending;
   const canRetry = Boolean(state.currentChatId) && !message.pending && message.role === "assistant" && isLatestAssistantMessage(message);
-  const canEdit = Boolean(state.currentChatId) && !message.pending && message.role === "user" && !state.isSending && !state.editingMessageId;
+  const canEdit = Boolean(state.currentChatId) && !message.pending && message.role === "user" && !isCurrentChatActivelyStreaming() && !state.editingMessageId;
   const actionsBlock = canExport || canRetry || canEdit
     ? `
       <div class="message-actions">
@@ -1288,9 +1397,9 @@ function renderMessageCard(message) {
         <span class="message-role">${escapeHtml(roleLabel)}</span>
         <time class="message-time">${escapeHtml(formatClock(message.createdAt))}</time>
       </div>
+      ${reasoningBlock}
       ${contentBlock}
       ${attachmentsBlock}
-      ${reasoningBlock}
       ${toolCallsBlock}
       ${invalidToolCallsBlock}
       ${contextBlock}
@@ -1369,12 +1478,44 @@ function findSelectedModel() {
   return state.models.find(model => model.key === state.selectedModel) || null;
 }
 
+function getLoadedContextLength(model) {
+  return firstFiniteNumber(...(model?.loadedInstances || []).map(instance => instance?.config?.contextLength));
+}
+
+function resolveModelContextLimit(model) {
+  return firstFiniteNumber(getLoadedContextLength(model), model?.maxContextLength);
+}
+
 function suggestContextLength(model) {
-  if (!model?.maxContextLength) {
+  const resolved = resolveModelContextLimit(model);
+  if (!resolved) {
     return 8192;
   }
 
-  return Math.min(model.maxContextLength, 8192);
+  return resolved;
+}
+
+function shouldUseSuggestedContext(model) {
+  if (!state.selectedContextLength || !state.contextLengthManual) {
+    return true;
+  }
+
+  return state.selectedContextLength === String(suggestContextLength(model));
+}
+
+function setContextLengthValue(value, options = {}) {
+  const manual = options.manual === true;
+  state.selectedContextLength = value === null || value === undefined || value === "" ? "" : String(value);
+  state.contextLengthManual = manual && Boolean(state.selectedContextLength);
+}
+
+function applySuggestedContextLength(model) {
+  setContextLengthValue(suggestContextLength(model), { manual: false });
+}
+
+function syncContextLengthInput(value) {
+  state.selectedContextLength = value;
+  state.contextLengthManual = Boolean(value) && value !== String(suggestContextLength(findSelectedModel()));
 }
 
 async function consumeEventStream(stream, onEvent) {
@@ -1581,10 +1722,10 @@ function formatRelativeDate(value) {
 
 function formatNumber(value) {
   if (typeof value !== "number") {
-    return "0.0";
+    return "0.00";
   }
 
-  return value.toFixed(1);
+  return value.toFixed(2);
 }
 
 function formatInteger(value) {
@@ -1619,7 +1760,7 @@ function renderComposerAttachments() {
   elements.composerAttachments.innerHTML = state.composerAttachments
     .map((attachment, index) => `
       <article class="composer-attachment${attachment.kind === "image" ? " image" : ""}">
-        ${attachment.kind === "image" && attachment.dataUrl ? `<img src="${escapeAttribute(attachment.dataUrl)}" alt="${escapeAttribute(attachment.name)}" loading="lazy" />` : ""}
+        ${attachment.kind === "image" && attachment.dataUrl ? `<img src="${escapeAttribute(attachment.dataUrl)}" alt="${escapeAttribute(attachment.name)}" loading="eager" />` : ""}
         <div class="composer-attachment-meta">
           <strong>${escapeHtml(attachment.name)}</strong>
           <span>${escapeHtml(formatAttachmentMeta(attachment))}</span>
@@ -1632,7 +1773,7 @@ function renderComposerAttachments() {
 function renderMessageAttachment(attachment) {
   return `
     <article class="message-attachment${attachment.kind === "image" ? " image" : ""}">
-      ${attachment.kind === "image" && attachment.dataUrl ? `<img src="${escapeAttribute(attachment.dataUrl)}" alt="${escapeAttribute(attachment.name)}" loading="lazy" />` : ""}
+      ${attachment.kind === "image" && attachment.dataUrl ? `<img src="${escapeAttribute(attachment.dataUrl)}" alt="${escapeAttribute(attachment.name)}" loading="eager" />` : ""}
       <div class="message-attachment-meta">
         <strong>${escapeHtml(attachment.name)}</strong>
         <span>${escapeHtml(formatAttachmentMeta(attachment))}</span>
@@ -1642,19 +1783,20 @@ function renderMessageAttachment(attachment) {
 
 function renderContextMeter(message) {
   const limit = message?.stats?.contextLimit;
-  const used = message?.stats?.inputTokens;
-  if (!limit || !used) {
+  const used = resolveUsedContextTokens(message?.stats);
+  if (typeof limit !== "number" || typeof used !== "number") {
     return "";
   }
 
   const remaining = Math.max(limit - used, 0);
   const percent = Math.max(4, Math.min(100, (used / limit) * 100));
+  const prefix = message?.stats?.isEstimated ? "~" : "";
 
   return `
     <div class="context-meter">
       <div class="context-meter-head">
-        <span>${escapeHtml(`${formatInteger(used)} used`)}</span>
-        <span>${escapeHtml(`${formatInteger(remaining)} remaining`)}</span>
+        <span>${escapeHtml(`${prefix}${formatInteger(used)} used total`)}</span>
+        <span>${escapeHtml(`${prefix}${formatInteger(remaining)} remaining`)}</span>
       </div>
       <div class="context-meter-bar" aria-hidden="true">
         <span style="width: ${percent}%"></span>
@@ -1662,8 +1804,253 @@ function renderContextMeter(message) {
     </div>`;
 }
 
+function renderMessageStats(stats) {
+  const parts = [];
+  const usedContextTokens = resolveUsedContextTokens(stats);
+  if (typeof stats.tokensPerSecond === "number") {
+    parts.push(`${formatNumber(stats.tokensPerSecond)} tok/s`);
+  }
+  if (typeof stats.totalTimeSeconds === "number") {
+    parts.push(`${formatDuration(stats.totalTimeSeconds)} total`);
+  }
+  if (typeof usedContextTokens === "number") {
+    parts.push(`${formatInteger(usedContextTokens)} used`);
+  }
+  if (typeof stats.inputTokens === "number") {
+    parts.push(`${formatInteger(stats.inputTokens)} prompt`);
+  }
+  if (typeof stats.totalOutputTokens === "number") {
+    parts.push(`${formatInteger(stats.totalOutputTokens)} generated`);
+  }
+  if (typeof stats.answerOutputTokens === "number" && typeof stats.reasoningOutputTokens === "number" && stats.reasoningOutputTokens > 0) {
+    parts.push(`${formatInteger(stats.answerOutputTokens)} answer`);
+  }
+  if (typeof stats.reasoningOutputTokens === "number" && stats.reasoningOutputTokens > 0) {
+    parts.push(`${formatInteger(stats.reasoningOutputTokens)} think`);
+  }
+
+  if (parts.length === 0) {
+    return "";
+  }
+
+  return `
+      <div class="stats-row">
+        ${parts.map((part, index) => `${index > 0 ? '<span class="divider">•</span>' : ""}<span>${escapeHtml(part)}</span>`).join("")}
+      </div>`;
+}
+
+function resolveUsedContextTokens(stats) {
+  if (!stats || typeof stats.inputTokens !== "number") {
+    return null;
+  }
+
+  const generatedTokens = typeof stats.totalOutputTokens === "number" ? stats.totalOutputTokens : 0;
+  return stats.inputTokens + Math.max(generatedTokens, 0);
+}
+
+function doesSelectedContextRequireReload(model) {
+  const loadedContextLength = getLoadedContextLength(model);
+  const selectedContextLength = parseOptionalNumber(state.selectedContextLength);
+  if (typeof loadedContextLength !== "number" || typeof selectedContextLength !== "number") {
+    return false;
+  }
+
+  return selectedContextLength !== loadedContextLength;
+}
+
+function initializePendingUsageEstimate(pendingAssistant) {
+  if (!pendingAssistant) {
+    return;
+  }
+
+  pendingAssistant.stats = buildEstimatedPendingStats(pendingAssistant);
+}
+
+function refreshPendingUsageEstimate(pendingAssistant) {
+  if (!pendingAssistant?.pending) {
+    return;
+  }
+
+  pendingAssistant.stats = buildEstimatedPendingStats(pendingAssistant);
+}
+
+function buildEstimatedPendingStats(pendingAssistant) {
+  const inputTokens = estimatePendingInputTokens(pendingAssistant);
+  const reasoningOutputTokens = estimateTextTokens(pendingAssistant?.reasoning || "");
+  const answerOutputTokens = estimateTextTokens(pendingAssistant?.content || "");
+  const toolCallTokens = estimatePendingToolCallTokens(pendingAssistant);
+  const totalOutputTokens = reasoningOutputTokens + answerOutputTokens + toolCallTokens;
+
+  return {
+    inputTokens,
+    totalOutputTokens,
+    answerOutputTokens,
+    reasoningOutputTokens,
+    tokensPerSecond: null,
+    timeToFirstTokenSeconds: null,
+    modelLoadTimeSeconds: null,
+    contextLimit: resolveResponseContextLimit(null, pendingAssistant?.modelKey || state.selectedModel),
+    isEstimated: true,
+  };
+}
+
+function estimatePendingInputTokens(pendingAssistant) {
+  const messages = (state.currentChat?.messages || []).filter(message => message.id !== pendingAssistant?.id);
+  let latestUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === "user") {
+      latestUserIndex = index;
+      break;
+    }
+  }
+
+  if (latestUserIndex === -1) {
+    return null;
+  }
+
+  const anchorUsedTokens = resolveAnchorUsedTokens(messages, latestUserIndex);
+  const latestUserTokens = estimateUserPromptTokens(messages[latestUserIndex]);
+  if (typeof anchorUsedTokens === "number") {
+    return anchorUsedTokens + latestUserTokens;
+  }
+
+  let total = estimateSystemPromptTokens(state.systemPrompt);
+  for (let index = 0; index <= latestUserIndex; index += 1) {
+    total += estimateVisibleMessageTokens(messages[index]);
+  }
+
+  return total;
+}
+
+function resolveAnchorUsedTokens(messages, latestUserIndex) {
+  for (let index = latestUserIndex - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "assistant" || !message.stats || message.pending || message.stats.isEstimated) {
+      continue;
+    }
+
+    const usedTokens = resolveUsedContextTokens(message.stats);
+    if (typeof usedTokens === "number") {
+      return usedTokens;
+    }
+  }
+
+  return null;
+}
+
+function estimateVisibleMessageTokens(message) {
+  if (!message) {
+    return 0;
+  }
+
+  if (message.role === "user") {
+    return estimateUserPromptTokens(message);
+  }
+
+  return ESTIMATED_MESSAGE_OVERHEAD_TOKENS
+    + estimateTextTokens(message.content || "")
+    + estimateTextTokens(message.reasoning || "")
+    + estimatePendingToolCallTokens(message);
+}
+
+function estimateUserPromptTokens(message) {
+  if (!message) {
+    return 0;
+  }
+
+  const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+  const imageAttachments = attachments.filter(attachment => String(attachment.kind).toLowerCase() === "image" && attachment.dataUrl);
+  const fileAttachments = attachments.filter(attachment => String(attachment.kind).toLowerCase() !== "image");
+
+  let promptText = String(message.content || "").trim();
+  if (!promptText && attachments.length > 0) {
+    if (imageAttachments.length > 0 && fileAttachments.length > 0) {
+      promptText = "Please analyze the attached content and files.";
+    } else if (imageAttachments.length > 0) {
+      promptText = "Please analyze the attached image.";
+    } else {
+      promptText = "Please use the attached file as context.";
+    }
+  }
+
+  let total = ESTIMATED_MESSAGE_OVERHEAD_TOKENS + estimateTextTokens(promptText);
+  if (fileAttachments.length > 0) {
+    total += estimateTextTokens("Attached file context:");
+    for (const attachment of fileAttachments) {
+      total += estimateTextTokens(buildEstimatedFileAttachmentPromptBlock(attachment));
+    }
+  }
+
+  total += imageAttachments.length * ESTIMATED_IMAGE_ATTACHMENT_TOKENS;
+  return total;
+}
+
+function buildEstimatedFileAttachmentPromptBlock(attachment) {
+  const lines = [`File: ${attachment.name}${attachment.contentType ? ` (${attachment.contentType})` : ""}`];
+  if (attachment.textContent) {
+    lines.push("```text", String(attachment.textContent).trimEnd(), "```");
+    if (attachment.truncated) {
+      lines.push("File content was truncated before sending.");
+    }
+  } else {
+    lines.push("Binary file attached. Text extraction was not available.");
+  }
+
+  return lines.join("\n").trimEnd();
+}
+
+function estimatePendingToolCallTokens(message) {
+  let total = 0;
+
+  for (const toolCall of message?.toolCalls || []) {
+    total += ESTIMATED_TOOL_CALL_OVERHEAD_TOKENS;
+    total += estimateTextTokens(toolCall?.tool || "");
+    total += estimateTextTokens(toolCall?.argumentsJson || "");
+  }
+
+  for (const toolCall of message?.invalidToolCalls || []) {
+    total += ESTIMATED_TOOL_CALL_OVERHEAD_TOKENS;
+    total += estimateTextTokens(toolCall?.reason || "");
+    total += estimateTextTokens(toolCall?.metadataJson || "");
+  }
+
+  return total;
+}
+
+function estimateSystemPromptTokens(systemPrompt) {
+  const prompt = String(systemPrompt || "").trim();
+  if (!prompt) {
+    return 0;
+  }
+
+  return ESTIMATED_SYSTEM_PROMPT_OVERHEAD_TOKENS + estimateTextTokens(prompt);
+}
+
+function estimateTextTokens(value) {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    return 0;
+  }
+
+  return Math.max(1, Math.ceil(normalized.length / ESTIMATED_CHARS_PER_TOKEN));
+}
+
 function resolveAssistantLabel(message) {
   return message.modelKey || state.currentChat?.modelKey || state.selectedModel || "Model";
+}
+
+function formatDuration(valueSeconds) {
+  if (typeof valueSeconds !== "number" || !Number.isFinite(valueSeconds)) {
+    return "0.000s";
+  }
+
+  if (valueSeconds < 60) {
+    return `${valueSeconds.toFixed(3)}s`;
+  }
+
+  const minutes = Math.floor(valueSeconds / 60);
+  const seconds = valueSeconds % 60;
+  return `${minutes}m ${seconds.toFixed(3)}s`;
 }
 
 function isLatestAssistantMessage(message) {
@@ -1722,8 +2109,51 @@ function toggleTheme() {
   renderControls();
 }
 
+function loadAutoScrollPreference() {
+  try {
+    return localStorage.getItem("mls-auto-scroll") !== "false";
+  } catch {
+    return true;
+  }
+}
+
+function saveAutoScrollPreference(value) {
+  try {
+    localStorage.setItem("mls-auto-scroll", value ? "true" : "false");
+  } catch {
+  }
+}
+
+function toggleAutoScroll() {
+  state.autoScrollEnabled = !state.autoScrollEnabled;
+  saveAutoScrollPreference(state.autoScrollEnabled);
+
+  if (state.autoScrollEnabled) {
+    state.stickToBottom = true;
+    syncMessageScroll(true);
+  } else {
+    state.stickToBottom = false;
+  }
+
+  renderAutoScrollButton();
+}
+
+function renderAutoScrollButton() {
+  if (!elements.autoScrollButton) {
+    return;
+  }
+
+  const enabled = state.autoScrollEnabled;
+  setButtonIcon(elements.autoScrollButton, enabled ? "autoscrollOn" : "autoscrollOff");
+  const label = enabled ? "Disable auto-scroll" : "Enable auto-scroll";
+  elements.autoScrollButton.title = label;
+  elements.autoScrollButton.setAttribute("aria-label", label);
+  elements.autoScrollButton.setAttribute("aria-pressed", enabled ? "true" : "false");
+  elements.autoScrollButton.classList.toggle("is-active", enabled);
+}
+
 async function deleteChat(chatId) {
-  if (!chatId || state.isSending) {
+  if (!chatId || state.streamingChatIds.has(chatId)) {
     return;
   }
 
@@ -1823,7 +2253,7 @@ function extractFileName(contentDisposition) {
 }
 
 async function retryLatestPrompt() {
-  if (state.isSending || !state.currentChatId) {
+  if (isCurrentChatActivelyStreaming() || !state.currentChatId) {
     return;
   }
 
@@ -1832,6 +2262,8 @@ async function retryLatestPrompt() {
     role: "assistant",
     content: "",
     reasoning: "",
+    thinkingActive: false,
+    requestStartedAtMs: Date.now(),
     toolCalls: [],
     invalidToolCalls: [],
     attachments: [],
@@ -1842,17 +2274,32 @@ async function retryLatestPrompt() {
   };
 
   state.currentChat.messages = state.currentChat.messages || [];
+  // Remove the previous assistant message — the server will replace it with the new response
+  const msgs = state.currentChat.messages;
+  const lastAssistantIdx = msgs.reduceRight((found, msg, idx) =>
+    found === -1 && msg.role === "assistant" ? idx : found, -1);
+  if (lastAssistantIdx !== -1) {
+    msgs.splice(lastAssistantIdx, 1);
+  }
   const expectedMessageCount = state.currentChat.messages.length + 1;
   state.currentChat.messages.push(pendingAssistant);
   state.isSending = true;
-  state.stickToBottom = true;
+  state.stickToBottom = state.autoScrollEnabled;
+  state.streamingChatIds.add(state.currentChatId);
+  initializePendingUsageEstimate(pendingAssistant);
   setStatus("Retrying latest prompt...", "busy");
   render();
+
+  const streamController = new AbortController();
+  state.currentStreamController = streamController;
+  state.currentStreamChatId = state.currentChatId;
+  state.streamControllers.set(state.currentChatId, streamController);
 
   try {
     const response = await fetch(`/api/chats/${encodeURIComponent(state.currentChatId)}/retry/stream`, {
       method: "POST",
       credentials: "same-origin",
+      signal: streamController.signal,
     });
 
     if (response.status === 401) {
@@ -1873,6 +2320,15 @@ async function retryLatestPrompt() {
 
     setStatus("Response complete.", "neutral");
   } catch (error) {
+    if (error?.name === "AbortError") {
+      setStatus("Stopped.", "neutral");
+      if (state.currentChatId) {
+        try { await openChat(state.currentChatId, true); } catch { }
+      } else if (state.currentChat?.messages) {
+        state.currentChat.messages = state.currentChat.messages.filter(m => m.id !== pendingAssistant.id);
+      }
+      return;
+    }
     if (await tryRecoverStreamFailure(error, expectedMessageCount)) {
       return;
     }
@@ -1883,7 +2339,14 @@ async function retryLatestPrompt() {
     setStatus(error.message || "Unable to retry the latest prompt.", "error");
     renderMessages();
   } finally {
-    state.isSending = false;
+    const finalStreamId = state.currentStreamChatId;
+    state.currentStreamController = null;
+    state.currentStreamChatId = null;
+    state.streamingChatIds.delete(finalStreamId);
+    state.streamingChatIds.delete(null);
+    state.streamControllers.delete(finalStreamId);
+    state.streamControllers.delete(null);
+    state.isSending = state.streamingChatIds.size > 0 || state.serverStreamPollChatId !== null;
     render();
   }
 }
@@ -2039,7 +2502,7 @@ function describeLmStudioError(message) {
 }
 
 function startEditMessage(messageId) {
-  if (state.isSending || !state.currentChatId) {
+  if (isCurrentChatActivelyStreaming() || !state.currentChatId) {
     return;
   }
   const message = state.currentChat?.messages?.find(m => m.id === messageId);
@@ -2067,7 +2530,7 @@ function cancelEditMessage() {
 }
 
 async function saveAndRegenerateMessage(messageId, newContent) {
-  if (state.isSending || !state.currentChatId || !messageId) {
+  if (isCurrentChatActivelyStreaming() || !state.currentChatId || !messageId) {
     return;
   }
   if (!newContent.trim()) {
@@ -2098,6 +2561,8 @@ async function saveAndRegenerateMessage(messageId, newContent) {
     role: "assistant",
     content: "",
     reasoning: "",
+    thinkingActive: false,
+    requestStartedAtMs: Date.now(),
     toolCalls: [],
     invalidToolCalls: [],
     attachments: [],
@@ -2125,10 +2590,17 @@ async function saveAndRegenerateMessage(messageId, newContent) {
   state.editingMessageId = null;
   state.editDraftContent = "";
   state.isSending = true;
-  state.stickToBottom = true;
+  state.stickToBottom = state.autoScrollEnabled;
+  state.streamingChatIds.add(state.currentChatId);
+  initializePendingUsageEstimate(pendingAssistant);
   const expectedMessageCount = state.currentChat.messages.length;
   setStatus("Applying edit and regenerating...", "busy");
   render();
+
+  const streamController = new AbortController();
+  state.currentStreamController = streamController;
+  state.currentStreamChatId = state.currentChatId;
+  state.streamControllers.set(state.currentChatId, streamController);
 
   try {
     const response = await fetch(
@@ -2138,6 +2610,7 @@ async function saveAndRegenerateMessage(messageId, newContent) {
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(requestBody),
+        signal: streamController.signal,
       }
     );
 
@@ -2159,6 +2632,15 @@ async function saveAndRegenerateMessage(messageId, newContent) {
 
     setStatus("Response complete.", "neutral");
   } catch (error) {
+    if (error?.name === "AbortError") {
+      setStatus("Stopped.", "neutral");
+      if (state.currentChatId) {
+        try { await openChat(state.currentChatId, true); } catch { }
+      } else if (state.currentChat?.messages) {
+        state.currentChat.messages = state.currentChat.messages.filter(m => m.id !== pendingAssistant.id);
+      }
+      return;
+    }
     if (await tryRecoverStreamFailure(error, expectedMessageCount)) {
       return;
     }
@@ -2168,7 +2650,12 @@ async function saveAndRegenerateMessage(messageId, newContent) {
     setStatus(error.message || "The request failed.", "error");
     renderMessages();
   } finally {
-    state.isSending = false;
+    const finalStreamId = state.currentStreamChatId;
+    state.currentStreamController = null;
+    state.currentStreamChatId = null;
+    state.streamingChatIds.delete(finalStreamId);
+    state.streamControllers.delete(finalStreamId);
+    state.isSending = state.streamingChatIds.size > 0 || state.serverStreamPollChatId !== null;
     render();
   }
 }
@@ -2185,6 +2672,7 @@ function renderMarkdown(value) {
   let listType = null;
   let listItems = [];
   let quoteLines = [];
+  let codeFenceMarker = null;
   let codeLanguage = null;
   let codeLines = [];
 
@@ -2202,7 +2690,7 @@ function renderMarkdown(value) {
       return;
     }
 
-    html += `<${listType}>${listItems.map(item => `<li>${renderInlineMarkdown(item)}</li>`).join("")}</${listType}>`;
+    html += `<${listType}>${listItems.map(item => `<li>${renderMarkdownListItem(item)}</li>`).join("")}</${listType}>`;
     listType = null;
     listItems = [];
   };
@@ -2223,15 +2711,16 @@ function renderMarkdown(value) {
 
     const languageClass = codeLanguage ? ` class="language-${escapeAttribute(codeLanguage)}"` : "";
     html += `<pre class="markdown-code"><code${languageClass}>${escapeHtml(codeLines.join("\n"))}</code></pre>`;
+    codeFenceMarker = null;
     codeLanguage = null;
     codeLines = [];
   };
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    const fenceMatch = line.match(/^```([\w-]+)?\s*$/);
+    const fenceMatch = line.match(/^(```|~~~)([\w-]+)?\s*$/);
     if (codeLanguage !== null) {
-      if (fenceMatch) {
+      if (fenceMatch && fenceMatch[1] === codeFenceMarker) {
         flushCode();
       } else {
         codeLines.push(line);
@@ -2243,7 +2732,8 @@ function renderMarkdown(value) {
       flushParagraph();
       flushList();
       flushQuote();
-      codeLanguage = fenceMatch[1] || "";
+      codeFenceMarker = fenceMatch[1];
+      codeLanguage = fenceMatch[2] || "";
       continue;
     }
 
@@ -2340,7 +2830,7 @@ function sanitizeMarkdownSource(value) {
   let inCodeFence = false;
 
   return lines.map(line => {
-    if (/^```/.test(line.trim())) {
+    if (/^(```|~~~)/.test(line.trim())) {
       inCodeFence = !inCodeFence;
       return line;
     }
@@ -2401,6 +2891,84 @@ function renderInlineMarkdown(value) {
   });
 
   return output;
+}
+
+function renderMarkdownListItem(value) {
+  const taskMatch = String(value || "").match(/^\[( |x|X)\]\s+(.+)$/);
+  if (!taskMatch) {
+    return renderInlineMarkdown(value);
+  }
+
+  return `<label class="markdown-task-item"><input type="checkbox" disabled ${/[xX]/.test(taskMatch[1]) ? "checked" : ""} /><span>${renderInlineMarkdown(taskMatch[2])}</span></label>`;
+}
+
+function renderMathInMarkdown(root) {
+  if (!root || typeof window.renderMathInElement !== "function") {
+    return;
+  }
+
+  root.querySelectorAll(".markdown-body").forEach(container => {
+    try {
+      window.renderMathInElement(container, {
+        delimiters: [
+          { left: "$$", right: "$$", display: true },
+          { left: "\\[", right: "\\]", display: true },
+          { left: "$", right: "$", display: false },
+          { left: "\\(", right: "\\)", display: false },
+        ],
+        throwOnError: false,
+        strict: "ignore",
+        ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code", "option"],
+      });
+    } catch {
+    }
+  });
+}
+
+function firstFiniteNumber(...values) {
+  for (const value of values) {
+    const numeric = typeof value === "number" ? value : Number(value);
+    if (Number.isFinite(numeric)) {
+      return numeric;
+    }
+  }
+
+  return null;
+}
+
+function resolveResponseContextLimit(result, modelKey) {
+  return firstFiniteNumber(
+    result?.modelInfo?.contextLength,
+    result?.model_info?.context_length,
+    result?.model?.contextLength,
+    result?.model?.context_length,
+    parseOptionalNumber(state.selectedContextLength),
+    resolveModelContextLimit(state.models.find(model => model.key === modelKey))
+  );
+}
+
+function normalizeStreamStats(result, modelKey) {
+  const stats = result?.stats;
+  if (!stats) {
+    return null;
+  }
+
+  const totalOutputTokens = firstFiniteNumber(stats.totalOutputTokens, stats.total_output_tokens);
+  const reasoningOutputTokens = firstFiniteNumber(stats.reasoningOutputTokens, stats.reasoning_output_tokens);
+
+  return {
+    inputTokens: firstFiniteNumber(stats.inputTokens, stats.input_tokens),
+    totalOutputTokens,
+    answerOutputTokens: typeof totalOutputTokens === "number"
+      ? Math.max(totalOutputTokens - (typeof reasoningOutputTokens === "number" ? reasoningOutputTokens : 0), 0)
+      : null,
+    reasoningOutputTokens,
+    tokensPerSecond: firstFiniteNumber(stats.tokensPerSecond, stats.tokens_per_second),
+    timeToFirstTokenSeconds: firstFiniteNumber(stats.timeToFirstTokenSeconds, stats.time_to_first_token_seconds),
+    modelLoadTimeSeconds: firstFiniteNumber(stats.modelLoadTimeSeconds, stats.model_load_time_seconds),
+    totalTimeSeconds: firstFiniteNumber(stats.totalTimeSeconds, stats.total_time_seconds),
+    contextLimit: resolveResponseContextLimit(result, modelKey),
+  };
 }
 
 function parseMarkdownTableRow(line) {
@@ -2632,20 +3200,38 @@ function isMessageScrollNearBottom() {
 }
 
 function updateStickToBottom() {
+  if (!state.autoScrollEnabled) {
+    state.stickToBottom = false;
+    return;
+  }
+
   state.stickToBottom = isMessageScrollNearBottom();
 }
 
 function syncMessageScroll(force = false) {
-  if (!force && !state.stickToBottom && !isMessageScrollNearBottom()) {
+  if (!force && (!state.autoScrollEnabled || (!state.stickToBottom && !isMessageScrollNearBottom()))) {
     return;
   }
 
-  requestAnimationFrame(() => {
-    const lastMessage = elements.messageList.lastElementChild;
-    lastMessage?.scrollIntoView({ block: "end" });
+  if (state.pendingScrollFrame) {
+    cancelAnimationFrame(state.pendingScrollFrame);
+  }
+
+  state.pendingScrollFrame = requestAnimationFrame(() => {
+    state.pendingScrollFrame = 0;
     elements.messageScroll.scrollTop = elements.messageScroll.scrollHeight;
-    state.stickToBottom = true;
+    state.stickToBottom = state.autoScrollEnabled && isMessageScrollNearBottom();
   });
+}
+
+function handleDeferredMediaLoad(event) {
+  if (event.target?.tagName !== "IMG") {
+    return;
+  }
+
+  if (state.autoScrollEnabled && (state.stickToBottom || isMessageScrollNearBottom())) {
+    syncMessageScroll();
+  }
 }
 
 function openConfirmDialog(dialog) {
@@ -2696,7 +3282,7 @@ async function confirmPendingAction() {
 }
 
 function promptDeleteChat(chatId) {
-  if (!chatId || state.isSending) {
+  if (!chatId || state.streamingChatIds.has(chatId)) {
     return;
   }
 
@@ -2722,6 +3308,7 @@ function renderActionIcons() {
   setButtonIcon(elements.configBannerDismiss, "close");
   setButtonIcon(elements.modelRefreshButton, "refresh");
   renderThemeButton();
+  renderAutoScrollButton();
   renderTopBarActions();
 }
 
@@ -2776,6 +3363,10 @@ function renderIcon(iconName) {
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path></svg>';
     case "refresh":
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-15 6.7L3 16"></path><path d="M3 21v-5h5"></path></svg>';
+    case "autoscrollOn":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10"></path><path d="M4 12h10"></path><path d="M4 17h6"></path><path d="M18 9v8"></path><path d="m15 14 3 3 3-3"></path></svg>';
+    case "autoscrollOff":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10"></path><path d="M4 12h10"></path><path d="M4 17h6"></path><path d="M18 9v8"></path><path d="m15 14 3 3 3-3"></path><path d="M5 5l14 14"></path></svg>';
     default:
       return "";
   }
@@ -2835,6 +3426,98 @@ async function recoverInterruptedStream() {
     setStatus("Chat refreshed after reconnecting.", "neutral");
   } catch {
   }
+}
+
+function stopStreamWaitPolling() {
+  if (state.serverStreamPollTimer !== null) {
+    clearInterval(state.serverStreamPollTimer);
+    state.serverStreamPollTimer = null;
+  }
+  state.serverStreamPollChatId = null;
+  state.isSending = state.streamingChatIds.size > 0;
+}
+
+function isCurrentChatActivelyStreaming() {
+  const chatId = state.currentChatId;
+  return state.streamingChatIds.has(chatId) ||
+         (chatId !== null && state.serverStreamPollChatId === chatId);
+}
+
+function stopStream() {
+  const chatId = state.currentChatId;
+  const controller = state.streamControllers.get(chatId);
+  if (controller) {
+    if (chatId) {
+      fetch(`/api/chats/${encodeURIComponent(chatId)}/stop`, { method: "POST", credentials: "same-origin" }).catch(() => {});
+    }
+    controller.abort();
+    return;
+  }
+  if (chatId && state.serverStreamPollChatId === chatId) {
+    stopStreamWaitPolling();
+    fetch(`/api/chats/${encodeURIComponent(chatId)}/stop`, { method: "POST", credentials: "same-origin" }).catch(() => {});
+    if (state.currentChat?.messages) {
+      state.currentChat.messages = state.currentChat.messages.filter(m => m.id !== "stream-pending-placeholder");
+    }
+    setStatus("Stopped.", "neutral");
+    render();
+  }
+}
+
+function startStreamWaitPolling(chatId) {
+  stopStreamWaitPolling();
+  state.serverStreamPollChatId = chatId;
+  state.isSending = true;
+
+  if (!state.currentChat) {
+    return;
+  }
+
+  const initialMessageCount = state.currentChat.messages.length;
+
+  state.currentChat.messages.push({
+    id: "stream-pending-placeholder",
+    role: "assistant",
+    content: "",
+    pending: true,
+    createdAt: new Date().toISOString(),
+    toolCalls: [],
+    invalidToolCalls: [],
+    stats: null,
+  });
+
+  setStatus("Reply in progress, waiting for model to finish...", "busy");
+  render();
+  syncMessageScroll(true);
+
+  state.serverStreamPollTimer = setInterval(async () => {
+    if (state.currentChatId !== chatId || state.streamingChatIds.has(chatId)) {
+      stopStreamWaitPolling();
+      return;
+    }
+
+    try {
+      const [chatData, streamsData] = await Promise.all([
+        fetchJson(`/api/chats/${encodeURIComponent(chatId)}`),
+        fetchJson("/api/chats/active-streams").catch(() => ({ chatIds: [] })),
+      ]);
+
+      const hasNewMessage = (chatData.messages?.length ?? 0) > initialMessageCount;
+      const isStillStreaming = (streamsData.chatIds || []).includes(chatId);
+
+      if (hasNewMessage || !isStillStreaming) {
+        stopStreamWaitPolling();
+        if (state.currentChatId === chatId) {
+          state.currentChat = chatData;
+          await refreshChats();
+          render();
+          syncMessageScroll(true);
+        }
+        setStatus(hasNewMessage ? "Response complete." : "Ready", "neutral");
+      }
+    } catch {
+    }
+  }, 3000);
 }
 
 function toggleTopBarActions() {

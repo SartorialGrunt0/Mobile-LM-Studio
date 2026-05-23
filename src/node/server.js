@@ -26,6 +26,7 @@ function createApp() {
   const { config, runtimeSettingsPath, logDirectory } = readConfig();
   const logger = createLogger(logDirectory);
   const staticRoot = path.join(__dirname, "..", "MobileLmStudio", "wwwroot");
+  const katexRoot = path.join(__dirname, "..", "..", "node_modules", "katex", "dist");
   const repository = new ChatRepository(config.Storage.ConnectionString);
   const lmStudioClient = new LmStudioClient(() => ({
     baseUrl: state.config.LmStudio?.BaseUrl,
@@ -37,7 +38,9 @@ function createApp() {
     runtimeSettingsPath,
     logger,
     defaultUrl: buildListenAddress(config).defaultUrl,
-    repository
+    repository,
+    activeStreamChatIds: new Set(),
+    activeStreamAbortControllers: new Map()
   };
 
   app.disable("x-powered-by");
@@ -47,6 +50,7 @@ function createApp() {
     request.appState = state;
     next();
   });
+  app.use("/vendor/katex", express.static(katexRoot));
   app.use(express.static(staticRoot, { extensions: ["html"] }));
 
   app.get("/api/health", (_request, response) => {
@@ -212,6 +216,18 @@ function createApp() {
     response.json(request.appState.repository.listChats());
   });
 
+  app.get("/api/chats/active-streams", (request, response) => {
+    response.json({ chatIds: [...request.appState.activeStreamChatIds] });
+  });
+
+  app.post("/api/chats/:chatId/stop", (request, response) => {
+    const controller = request.appState.activeStreamAbortControllers.get(request.params.chatId);
+    if (controller) {
+      controller.abort();
+    }
+    response.sendStatus(204);
+  });
+
   app.get("/api/chats/:chatId", (request, response) => {
     const chat = request.appState.repository.getChat(request.params.chatId);
     if (!chat) {
@@ -303,6 +319,7 @@ function createApp() {
       attachments: retryContext.attachments
     };
 
+    request.appState.repository.deleteLastAssistantMessage(retryContext.chatId);
     await streamChat(request, response, lmStudioClient, retryRequest, {
       previousResponseId: retryContext.previousResponseId,
       persistChatId: retryContext.chatId
@@ -461,6 +478,12 @@ function normalizeChatStreamRequest(payload) {
 async function streamChat(request, response, lmStudioClient, chatRequest, options = {}) {
   const availableServers = await getServers(request.appState.config.LmStudio?.McpConfigPath);
   const integrations = buildMcpIntegrations(availableServers, chatRequest.mcpServerIds || []);
+
+  const streamAbortController = options.persistChatId ? new AbortController() : null;
+  if (options.persistChatId) {
+    request.appState.activeStreamChatIds.add(options.persistChatId);
+    request.appState.activeStreamAbortControllers.set(options.persistChatId, streamAbortController);
+  }
   let clientConnectionOpen = !request.aborted && !response.destroyed;
 
   const markClientDisconnected = () => {
@@ -503,6 +526,7 @@ async function streamChat(request, response, lmStudioClient, chatRequest, option
   }
 
   try {
+    const streamStartedAtMs = Date.now();
     const lmResponse = await lmStudioClient.startChatStream({
       model: chatRequest.model,
       input: buildLmStudioInput(chatRequest),
@@ -514,7 +538,7 @@ async function streamChat(request, response, lmStudioClient, chatRequest, option
       temperature: chatRequest.temperature,
       previous_response_id: options.previousResponseId || null,
       integrations: integrations.length > 0 ? integrations : null
-    });
+    }, streamAbortController?.signal);
 
     if (!lmResponse.ok) {
       const details = await lmStudioClient.readError(lmResponse);
@@ -530,7 +554,9 @@ async function streamChat(request, response, lmStudioClient, chatRequest, option
 
     const finalResponse = await relayLmStudioStream(lmResponse.body, writeStreamEvent);
     if (finalResponse) {
-      const assistant = buildAssistantPersistence(finalResponse, chatRequest.model, chatRequest.contextLength);
+      const assistant = buildAssistantPersistence(finalResponse, chatRequest.model, chatRequest.contextLength, {
+        totalTimeSeconds: Math.max((Date.now() - streamStartedAtMs) / 1000, 0)
+      });
       request.appState.repository.saveAssistantMessage(options.persistChatId, chatRequest, assistant);
     }
 
@@ -538,14 +564,24 @@ async function streamChat(request, response, lmStudioClient, chatRequest, option
       response.end();
     }
   } catch (error) {
+    const isAbort = error?.name === "AbortError" || error?.code === "ABORT_ERR";
     if (!canWriteToClient()) {
-      request.appState.logger.error(`Background chat stream failed for chat ${options.persistChatId || "(unknown)"}.`, error);
+      if (!isAbort) {
+        request.appState.logger.error(`Background chat stream failed for chat ${options.persistChatId || "(unknown)"}.`, error);
+      }
       return;
     }
 
     if (!response.writableEnded) {
-      await writeStreamEvent("error", JSON.stringify({ message: error.message || "The LM Studio stream returned an error." }));
+      if (!isAbort) {
+        await writeStreamEvent("error", JSON.stringify({ message: error.message || "The LM Studio stream returned an error." }));
+      }
       response.end();
+    }
+  } finally {
+    if (options.persistChatId) {
+      request.appState.activeStreamChatIds.delete(options.persistChatId);
+      request.appState.activeStreamAbortControllers.delete(options.persistChatId);
     }
   }
 }
