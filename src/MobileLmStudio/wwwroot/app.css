@@ -1118,7 +1118,7 @@ body.drawer-open .drawer-backdrop {
   right: 0.5rem;
   max-width: 340px;
   z-index: 30;
-  background: var(--surface-card);
+  background: var(--panel-strong);
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 0.75rem;
