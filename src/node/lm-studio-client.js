@@ -74,6 +74,39 @@ class LmStudioClient {
     return title.length > 60 ? `${title.slice(0, 57)}...` : title;
   }
 
+  async generateAdaptiveMemory(model, options) {
+    const response = await this.send("POST", "/api/v1/chat", {
+      model,
+      input: buildAdaptiveMemoryPrompt(options),
+      system_prompt: [
+        "Maintain a compact, durable memory profile for a chat user.",
+        "Update the profile using the existing memory and the newly observed user messages.",
+        "Keep only stable preferences, recurring interests, communication style, output preferences, and durable project context.",
+        "Do not store secrets, one-off transient tasks, or speculative personal details.",
+        `Return bullet points only and stay within ${Math.max(50, Number.parseInt(options?.maxWords, 10) || 500)} words.`
+      ].join(" "),
+      stream: false,
+      store: false,
+      temperature: 0,
+      max_output_tokens: Math.min(Math.max((Number.parseInt(options?.maxWords, 10) || 500) * 5, 256), 2000)
+    }, {
+      allowFailure: true
+    });
+
+    if (!response.ok) {
+      throw new Error(await this.readError(response));
+    }
+
+    const payload = await response.json().catch(() => null);
+    const output = Array.isArray(payload?.output) ? payload.output : [];
+    const item = output.find(candidate => candidate?.type === "message" && candidate?.content);
+    if (!item?.content) {
+      return String(options?.existingSummary || "").trim();
+    }
+
+    return truncateWords(String(item.content).trim(), Math.max(50, Number.parseInt(options?.maxWords, 10) || 500));
+  }
+
   async readError(response) {
     const content = await response.text();
     if (!content.trim()) {
@@ -173,6 +206,40 @@ function mapLoadConfig(config) {
 
 function ensureTrailingSlash(baseUrl) {
   return String(baseUrl || "").endsWith("/") ? String(baseUrl) : `${baseUrl}/`;
+}
+
+function buildAdaptiveMemoryPrompt(options) {
+  const existingSummary = String(options?.existingSummary || "").trim();
+  const messages = Array.isArray(options?.messages) ? options.messages : [];
+  const parts = [];
+
+  parts.push("Existing memory profile:");
+  parts.push(existingSummary || "- None yet.");
+  parts.push("");
+  parts.push("New user messages since the last review:");
+
+  for (const message of messages) {
+    const title = String(message?.chatTitle || "Untitled chat").trim();
+    const createdAt = String(message?.createdAt || "").trim();
+    const content = String(message?.content || "").trim();
+    if (!content) {
+      continue;
+    }
+    parts.push(`- [${createdAt || "unknown time"}] ${title}: ${content}`);
+  }
+
+  parts.push("");
+  parts.push("Revise the memory profile so it stays compact, factual, and directly useful for future assistant behavior.");
+  return parts.join("\n").trim();
+}
+
+function truncateWords(text, maxWords) {
+  const words = String(text || "").trim().split(/\s+/).filter(Boolean);
+  if (words.length <= maxWords) {
+    return words.join(" ");
+  }
+
+  return words.slice(0, maxWords).join(" ");
 }
 
 module.exports = {

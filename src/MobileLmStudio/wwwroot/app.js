@@ -7,16 +7,33 @@ const state = {
   currentChat: null,
   selectedModel: "",
   selectedReasoning: "default",
+  defaultMcpServerIds: normalizeSelectedMcpServerIds(loadDefaultMcpServerIds()),
   selectedMcpServerIds: new Set(),
+  chatOverrideDraft: null,
   enterKeyBehavior: loadEnterKeyBehavior(),
   chatToolsPopupOpen: false,
   selectedContextLength: "",
   selectedTemperature: "",
+  selectedTopK: "",
+  selectedTopP: "",
+  selectedMinP: "",
+  selectedRepeatPenalty: "",
   systemPrompt: "",
+  adaptiveMemory: {
+    enabled: false,
+    maxWords: 500,
+    summary: "",
+    lastUpdatedUtc: "",
+    lastReviewedUtc: "",
+    sourceCursorUtc: "",
+  },
   statusText: "Ready",
   statusTone: "neutral",
   isSending: false,
   isModelLoading: false,
+  isDictating: false,
+  speechRecognition: null,
+  speakingMessageId: null,
   modelLoadTarget: "",
   theme: "light",
   composerAttachments: [],
@@ -38,6 +55,7 @@ const state = {
   streamControllers: new Map(),
   currentStreamController: null,
   currentStreamChatId: null,
+  chatDefaultsSaveTimer: null,
 };
 
 const elements = {
@@ -52,8 +70,10 @@ const elements = {
   topBarActions: document.getElementById("top-bar-actions"),
   topActionsToggle: document.getElementById("top-actions-toggle"),
   modelButton: document.getElementById("model-button"),
+  topToolsButton: document.getElementById("top-tools-button"),
   themeButton: document.getElementById("theme-button"),
   settingsButton: document.getElementById("settings-button"),
+  chatOverrideButton: document.getElementById("chat-override-button"),
   logoutButton: document.getElementById("logout-button"),
   configBanner: document.getElementById("config-banner"),
   configBannerText: document.getElementById("config-banner-text"),
@@ -68,8 +88,14 @@ const elements = {
   unloadModelButton: document.getElementById("unload-model-button"),
   contextLengthInput: document.getElementById("context-length-input"),
   temperatureInput: document.getElementById("temperature-input"),
+  topKInput: document.getElementById("top-k-input"),
+  topPInput: document.getElementById("top-p-input"),
+  minPInput: document.getElementById("min-p-input"),
+  repeatPenaltyInput: document.getElementById("repeat-penalty-input"),
   reasoningSelect: document.getElementById("reasoning-select"),
   systemPromptInput: document.getElementById("system-prompt-input"),
+  modelAdvancedPanel: document.getElementById("model-advanced-panel"),
+  modelToolsSection: document.getElementById("model-tools-section"),
   modelMeta: document.getElementById("model-meta"),
   mcpList: document.getElementById("mcp-list"),
   statusBar: document.getElementById("status-bar"),
@@ -80,6 +106,7 @@ const elements = {
   composerAttachments: document.getElementById("composer-attachments"),
   composerContextMeter: document.getElementById("composer-context-meter"),
   attachButton: document.getElementById("attach-button"),
+  speechInputButton: document.getElementById("speech-input-button"),
   fileInput: document.getElementById("file-input"),
   messageInput: document.getElementById("message-input"),
   sendButton: document.getElementById("send-button"),
@@ -90,6 +117,9 @@ const elements = {
   modelScreen: document.getElementById("model-screen"),
   modelCloseButton: document.getElementById("model-close-button"),
   modelRefreshButton: document.getElementById("model-refresh-button"),
+  defaultToolsScreen: document.getElementById("default-tools-screen"),
+  defaultToolsCloseButton: document.getElementById("default-tools-close-button"),
+  defaultToolsMcpList: document.getElementById("default-tools-mcp-list"),
   settingsScreen: document.getElementById("settings-screen"),
   settingsForm: document.getElementById("settings-form"),
   settingsBaseUrl: document.getElementById("settings-base-url"),
@@ -99,6 +129,11 @@ const elements = {
   settingsMcpUploadButton: document.getElementById("settings-mcp-upload-button"),
   settingsMcpUploadName: document.getElementById("settings-mcp-upload-name"),
   settingsChatFontScale: document.getElementById("settings-chat-font-scale"),
+  settingsThemeButton: document.getElementById("settings-theme-button"),
+  settingsAutoScrollButton: document.getElementById("settings-auto-scroll-button"),
+  settingsAdaptiveMemoryEnabled: document.getElementById("settings-adaptive-memory-enabled"),
+  settingsAdaptiveMemoryMaxWords: document.getElementById("settings-adaptive-memory-max-words"),
+  settingsDownloadMemoryButton: document.getElementById("settings-download-memory-button"),
   settingsRequireLogin: document.getElementById("settings-require-login"),
   settingsPin: document.getElementById("settings-pin"),
   settingsPinHint: document.getElementById("settings-pin-hint"),
@@ -109,6 +144,19 @@ const elements = {
   chatToolsButton: document.getElementById("chat-tools-button"),
   chatToolsPopup: document.getElementById("chat-tools-popup"),
   chatToolsMcpList: document.getElementById("chat-tools-mcp-list"),
+  chatOverrideScreen: document.getElementById("chat-override-screen"),
+  chatOverrideForm: document.getElementById("chat-override-form"),
+  chatOverrideCloseButton: document.getElementById("chat-override-close-button"),
+  chatOverrideSystemPromptInput: document.getElementById("chat-override-system-prompt-input"),
+  chatOverrideReasoningSelect: document.getElementById("chat-override-reasoning-select"),
+  chatOverrideTemperatureInput: document.getElementById("chat-override-temperature-input"),
+  chatOverrideTopKInput: document.getElementById("chat-override-top-k-input"),
+  chatOverrideTopPInput: document.getElementById("chat-override-top-p-input"),
+  chatOverrideMinPInput: document.getElementById("chat-override-min-p-input"),
+  chatOverrideRepeatPenaltyInput: document.getElementById("chat-override-repeat-penalty-input"),
+  chatOverrideMcpList: document.getElementById("chat-override-mcp-list"),
+  chatOverrideResetButton: document.getElementById("chat-override-reset-button"),
+  chatOverrideSaveButton: document.getElementById("chat-override-save-button"),
   confirmScreen: document.getElementById("confirm-screen"),
   confirmTitle: document.getElementById("confirm-title"),
   confirmMessage: document.getElementById("confirm-message"),
@@ -117,6 +165,7 @@ const elements = {
 };
 
 const desktopLayoutMedia = window.matchMedia("(min-width: 960px)");
+const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition || null;
 const ESTIMATED_CHARS_PER_TOKEN = 4;
 const ESTIMATED_MESSAGE_OVERHEAD_TOKENS = 6;
 const ESTIMATED_SYSTEM_PROMPT_OVERHEAD_TOKENS = 8;
@@ -191,10 +240,17 @@ function bindEvents() {
   });
 
   elements.modelButton.addEventListener("click", () => openModelMenu());
+  elements.topToolsButton?.addEventListener("click", () => openDefaultToolsMenu());
   elements.modelCloseButton.addEventListener("click", () => closeModelMenu());
   elements.modelScreen.addEventListener("click", event => {
     if (event.target === elements.modelScreen) {
       closeModelMenu();
+    }
+  });
+  elements.defaultToolsCloseButton?.addEventListener("click", () => closeDefaultToolsMenu());
+  elements.defaultToolsScreen?.addEventListener("click", event => {
+    if (event.target === elements.defaultToolsScreen) {
+      closeDefaultToolsMenu();
     }
   });
   elements.themeButton.addEventListener("click", () => toggleTheme());
@@ -246,6 +302,24 @@ function bindEvents() {
       return;
     }
 
+    const copyCodeButton = event.target.closest("button[data-copy-code-block]");
+    if (copyCodeButton) {
+      void copyCodeBlockRaw(copyCodeButton);
+      return;
+    }
+
+    const copyButton = event.target.closest("button[data-copy-message-id]");
+    if (copyButton?.dataset.copyMessageId) {
+      void copyMessageMarkdown(copyButton.dataset.copyMessageId);
+      return;
+    }
+
+    const speakButton = event.target.closest("button[data-speak-message-id]");
+    if (speakButton?.dataset.speakMessageId) {
+      toggleMessageSpeech(speakButton.dataset.speakMessageId);
+      return;
+    }
+
     const exportButton = event.target.closest("button[data-export-message-id]");
     if (exportButton?.dataset.exportMessageId) {
       void exportMessage(exportButton.dataset.exportMessageId);
@@ -291,15 +365,25 @@ function bindEvents() {
       return;
     }
 
-    if (state.selectedMcpServerIds.has(mcpId)) {
-      state.selectedMcpServerIds.delete(mcpId);
-    } else {
-      state.selectedMcpServerIds.add(mcpId);
+    toggleDefaultMcpServer(mcpId);
+    renderMcpServers();
+    renderDefaultToolsMenu();
+    renderChatToolsButton();
+  });
+
+  elements.defaultToolsMcpList?.addEventListener("click", event => {
+    const button = event.target.closest("button[data-mcp-id]");
+    if (!button?.dataset.mcpId) {
+      return;
     }
 
-    saveDefaultMcpServerIds(state.selectedMcpServerIds);
+    toggleDefaultMcpServer(button.dataset.mcpId);
+    renderDefaultToolsMenu();
     renderMcpServers();
     renderChatToolsButton();
+    if (!elements.chatOverrideScreen?.hidden) {
+      renderChatOverrideMenu();
+    }
   });
 
   elements.chatToolsButton?.addEventListener("click", event => {
@@ -318,19 +402,29 @@ function bindEvents() {
       return;
     }
 
-    if (state.selectedMcpServerIds.has(mcpId)) {
-      state.selectedMcpServerIds.delete(mcpId);
-    } else {
-      state.selectedMcpServerIds.add(mcpId);
-    }
+    toggleActiveMcpServer(mcpId);
 
     renderChatToolsPopup();
     renderChatToolsButton();
+    if (!elements.chatOverrideScreen?.hidden) {
+      renderChatOverrideMenu();
+    }
+    void persistCurrentChatOverrides({ silent: true, rerender: false });
   });
 
   document.addEventListener("keydown", event => {
     if (event.key === "Escape" && state.chatToolsPopupOpen) {
       closeChatToolsPopup();
+      return;
+    }
+
+    if (event.key === "Escape" && !elements.chatOverrideScreen?.hidden) {
+      closeChatOverrideMenu();
+      return;
+    }
+
+    if (event.key === "Escape" && !elements.defaultToolsScreen?.hidden) {
+      closeDefaultToolsMenu();
     }
   });
 
@@ -344,23 +438,48 @@ function bindEvents() {
     elements.contextLengthInput.value = state.selectedContextLength;
     normalizeReasoningSelection();
     renderModelDetails();
+    scheduleChatDefaultsSave();
   });
 
   elements.contextLengthInput.addEventListener("input", () => {
     syncContextLengthInput(elements.contextLengthInput.value.trim());
     renderModelDetails();
+    scheduleChatDefaultsSave();
   });
 
   elements.temperatureInput?.addEventListener("input", () => {
     state.selectedTemperature = elements.temperatureInput.value.trim();
+    scheduleChatDefaultsSave();
+  });
+
+  elements.topKInput?.addEventListener("input", () => {
+    state.selectedTopK = elements.topKInput.value.trim();
+    scheduleChatDefaultsSave();
+  });
+
+  elements.topPInput?.addEventListener("input", () => {
+    state.selectedTopP = elements.topPInput.value.trim();
+    scheduleChatDefaultsSave();
+  });
+
+  elements.minPInput?.addEventListener("input", () => {
+    state.selectedMinP = elements.minPInput.value.trim();
+    scheduleChatDefaultsSave();
+  });
+
+  elements.repeatPenaltyInput?.addEventListener("input", () => {
+    state.selectedRepeatPenalty = elements.repeatPenaltyInput.value.trim();
+    scheduleChatDefaultsSave();
   });
 
   elements.reasoningSelect.addEventListener("change", () => {
     state.selectedReasoning = elements.reasoningSelect.value;
+    scheduleChatDefaultsSave();
   });
 
   elements.systemPromptInput.addEventListener("input", () => {
     state.systemPrompt = elements.systemPromptInput.value;
+    scheduleChatDefaultsSave();
   });
 
   elements.sendButton.addEventListener("click", event => {
@@ -376,6 +495,7 @@ function bindEvents() {
   });
 
   elements.attachButton.addEventListener("click", () => elements.fileInput.click());
+  elements.speechInputButton?.addEventListener("click", () => void toggleSpeechInput());
   elements.fileInput.addEventListener("change", event => {
     void addComposerAttachments(event.target.files, "file");
     event.target.value = "";
@@ -417,6 +537,10 @@ function bindEvents() {
     void saveSettings();
   });
   elements.settingsRequireLogin?.addEventListener("change", () => renderSettingsSecurityState());
+  elements.settingsAdaptiveMemoryEnabled?.addEventListener("change", () => renderAdaptiveMemorySettingsState());
+  elements.settingsThemeButton?.addEventListener("click", () => toggleTheme());
+  elements.settingsAutoScrollButton?.addEventListener("click", () => toggleAutoScroll());
+  elements.settingsDownloadMemoryButton?.addEventListener("click", () => downloadAdaptiveMemoryFile());
 
   elements.settingsApiToken.addEventListener("focus", () => {
     elements.settingsApiToken.type = "text";
@@ -431,6 +555,29 @@ function bindEvents() {
   });
 
   elements.settingsButton.addEventListener("click", () => openSettings());
+  elements.chatOverrideButton?.addEventListener("click", () => openChatOverrideMenu());
+  elements.chatOverrideCloseButton?.addEventListener("click", () => closeChatOverrideMenu());
+  elements.chatOverrideScreen?.addEventListener("click", event => {
+    if (event.target === elements.chatOverrideScreen) {
+      closeChatOverrideMenu();
+    }
+  });
+  elements.chatOverrideResetButton?.addEventListener("click", () => resetChatOverrides());
+  elements.chatOverrideForm?.addEventListener("submit", event => {
+    event.preventDefault();
+    void saveChatOverrides();
+  });
+  elements.chatOverrideMcpList?.addEventListener("click", event => {
+    const button = event.target.closest("button[data-mcp-id]");
+    if (!button?.dataset.mcpId) {
+      return;
+    }
+
+    toggleActiveMcpServer(button.dataset.mcpId);
+    renderChatOverrideMenu();
+    renderChatToolsPopup();
+    renderChatToolsButton();
+  });
   elements.confirmCancelButton?.addEventListener("click", () => closeConfirmDialog());
   elements.confirmAcceptButton?.addEventListener("click", () => void confirmPendingAction());
   elements.confirmScreen?.addEventListener("click", event => {
@@ -447,10 +594,11 @@ async function refreshBootstrap() {
 }
 
 async function loadAuthenticatedData() {
-  const [modelsResult, chatsResult, mcpServersResult] = await Promise.allSettled([
+  const [modelsResult, chatsResult, mcpServersResult, chatDefaultsResult] = await Promise.allSettled([
     fetchJson("/api/models"),
     fetchJson("/api/chats"),
     fetchJson("/api/mcp/servers"),
+    fetchJson("/api/chat-defaults"),
   ]);
 
   const warnings = [];
@@ -474,6 +622,12 @@ async function loadAuthenticatedData() {
   } else {
     state.mcpServers = [];
     warnings.push(mcpServersResult.reason?.message || "Unable to load MCP servers.");
+  }
+
+  if (chatDefaultsResult.status === "fulfilled") {
+    applyChatDefaultsPayload(chatDefaultsResult.value);
+  } else {
+    warnings.push(chatDefaultsResult.reason?.message || "Unable to load saved model defaults.");
   }
 
   ensureSelectionDefaults();
@@ -589,6 +743,9 @@ function ensureSelectionDefaults() {
 function startNewDraft(options = {}) {
   const { resetConversationSettings = false } = options;
   stopStreamWaitPolling();
+  cancelMessageSpeech();
+  closeChatOverrideMenu();
+  closeDefaultToolsMenu();
   ensureSelectionDefaults();
   if (resetConversationSettings) {
     resetDraftConversationState();
@@ -604,17 +761,18 @@ function startNewDraft(options = {}) {
     reasoning: normalizeReasoningValue(),
     contextLength: parseOptionalNumber(state.selectedContextLength),
     temperature: parseOptionalFloat(state.selectedTemperature),
+    topK: parseOptionalNumber(state.selectedTopK),
+    topP: parseOptionalFloat(state.selectedTopP),
+    minP: parseOptionalFloat(state.selectedMinP),
+    repeatPenalty: parseOptionalFloat(state.selectedRepeatPenalty),
     selectedMcpServerIds: Array.from(state.selectedMcpServerIds),
+    chatOverrides: null,
     messages: [],
   };
 }
 
 function resetDraftConversationState() {
-  state.systemPrompt = "";
-  state.selectedReasoning = "default";
-  applySuggestedContextLength(findSelectedModel());
-  state.selectedTemperature = "";
-  state.selectedMcpServerIds = normalizeSelectedMcpServerIds(loadDefaultMcpServerIds());
+  state.selectedMcpServerIds = cloneSelectedMcpServerIds(state.defaultMcpServerIds);
 }
 
 function clearComposerDraft() {
@@ -627,19 +785,12 @@ function clearComposerDraft() {
 
 async function openChat(chatId, suppressStatus = false) {
   stopStreamWaitPolling();
+  cancelMessageSpeech();
+  closeChatOverrideMenu();
+  closeDefaultToolsMenu();
   try {
-    state.currentChat = await fetchJson(`/api/chats/${encodeURIComponent(chatId)}`);
+    state.currentChat = normalizeChatRecord(await fetchJson(`/api/chats/${encodeURIComponent(chatId)}`));
     state.currentChatId = state.currentChat.id;
-    const loadedModel = state.models.find(model => (model.loadedInstances || []).length > 0);
-    state.selectedModel = state.currentChat.modelKey || loadedModel?.key || state.selectedModel;
-    state.systemPrompt = state.currentChat.systemPrompt || "";
-    state.selectedReasoning = state.currentChat.reasoning || "default";
-    if (state.currentChat.contextLength) {
-      setContextLengthValue(state.currentChat.contextLength, { manual: true });
-    } else {
-      applySuggestedContextLength(findSelectedModel());
-    }
-    state.selectedTemperature = typeof state.currentChat.temperature === "number" ? String(state.currentChat.temperature) : "";
     state.selectedMcpServerIds = normalizeSelectedMcpServerIds(state.currentChat.selectedMcpServerIds || []);
     state.stickToBottom = state.autoScrollEnabled;
     normalizeReasoningSelection();
@@ -660,6 +811,8 @@ async function openChat(chatId, suppressStatus = false) {
     if (!suppressStatus) {
       setStatus(`Opened ${state.currentChat.title}.`, "neutral");
     }
+
+    void ensureChatHasAutoTitle(state.currentChat);
   } catch (error) {
     setStatus(error.message || "Unable to open chat.", "error");
   }
@@ -800,22 +953,12 @@ async function sendMessage() {
     return;
   }
 
-  if (!state.selectedModel) {
+  if (!resolveActiveChatRequestSettings().modelKey) {
     setStatus("Choose a model first.", "error");
     return;
   }
 
-  const requestBody = {
-    chatId: state.currentChatId,
-    model: state.selectedModel,
-    input,
-    systemPrompt: state.systemPrompt.trim() || null,
-    reasoning: normalizeReasoningValue(),
-    contextLength: parseOptionalNumber(state.selectedContextLength),
-    temperature: parseOptionalFloat(state.selectedTemperature),
-    mcpServerIds: Array.from(normalizeSelectedMcpServerIds(Array.from(state.selectedMcpServerIds))),
-    attachments,
-  };
+  const requestBody = buildChatRequestBody({ chatId: state.currentChatId, input, attachments });
 
   if (!state.currentChat) {
     startNewDraft();
@@ -832,7 +975,7 @@ async function sendMessage() {
     invalidToolCalls: [],
     stats: null,
     attachments: [],
-    modelKey: state.selectedModel,
+    modelKey: requestBody.model,
     createdAt: new Date().toISOString(),
     pending: true,
   };
@@ -847,18 +990,22 @@ async function sendMessage() {
     toolCalls: [],
     invalidToolCalls: [],
     attachments,
-    modelKey: state.selectedModel,
+    modelKey: requestBody.model,
     stats: null,
     createdAt: new Date().toISOString(),
   });
   state.currentChat.messages.push(pendingAssistant);
   state.currentChat.title = summarizeTitle(input || attachments[0]?.name || "New Chat");
-  state.currentChat.modelKey = state.selectedModel;
-  state.currentChat.systemPrompt = state.systemPrompt;
-  state.currentChat.reasoning = normalizeReasoningValue();
-  state.currentChat.contextLength = parseOptionalNumber(state.selectedContextLength);
-  state.currentChat.temperature = parseOptionalFloat(state.selectedTemperature);
-  state.currentChat.selectedMcpServerIds = Array.from(state.selectedMcpServerIds);
+  state.currentChat.modelKey = requestBody.model;
+  state.currentChat.systemPrompt = requestBody.systemPrompt;
+  state.currentChat.reasoning = requestBody.reasoning;
+  state.currentChat.contextLength = requestBody.contextLength;
+  state.currentChat.temperature = requestBody.temperature;
+  state.currentChat.topK = requestBody.topK;
+  state.currentChat.topP = requestBody.topP;
+  state.currentChat.minP = requestBody.minP;
+  state.currentChat.repeatPenalty = requestBody.repeatPenalty;
+  state.currentChat.selectedMcpServerIds = Array.from(normalizeSelectedMcpServerIds(requestBody.mcpServerIds));
   state.isSending = true;
   state.stickToBottom = state.autoScrollEnabled;
   state.streamingChatIds.add(state.currentChatId);
@@ -909,6 +1056,9 @@ async function sendMessage() {
     const chatIdForTitle = state.currentChatId;
 
     await consumeEventStream(response.body, event => applyStreamEvent(event, pendingAssistant));
+    if (wasNewChat && state.currentChatId && state.currentChat?.chatOverrides) {
+      await persistCurrentChatOverrides({ silent: true, rerender: false });
+    }
     await Promise.all([refreshChats(), refreshModels()]);
 
     if (state.currentChatId) {
@@ -1095,6 +1245,8 @@ function render() {
   renderControls();
   renderChatToolbar();
   renderTopBarActions();
+  renderDefaultToolsMenu();
+  renderChatOverrideMenu();
   renderChatList();
   renderMessages();
   renderComposerAttachments();
@@ -1157,30 +1309,37 @@ function renderControls() {
   renderReasoningOptions();
   renderModelDetails();
   renderMcpServers();
+  const mcpSection = elements.mcpList?.closest(".mcp-section");
+  if (mcpSection) {
+    mcpSection.hidden = !state.bootstrap?.mcpConfigured;
+  }
   elements.systemPromptInput.value = state.systemPrompt;
   elements.contextLengthInput.value = state.selectedContextLength;
   if (elements.temperatureInput) {
     elements.temperatureInput.value = state.selectedTemperature;
   }
+  if (elements.topKInput) {
+    elements.topKInput.value = state.selectedTopK;
+  }
+  if (elements.topPInput) {
+    elements.topPInput.value = state.selectedTopP;
+  }
+  if (elements.minPInput) {
+    elements.minPInput.value = state.selectedMinP;
+  }
+  if (elements.repeatPenaltyInput) {
+    elements.repeatPenaltyInput.value = state.selectedRepeatPenalty;
+  }
   const locked = !state.bootstrap?.authenticated && state.bootstrap?.requireLogin;
   const isActive = isCurrentChatActivelyStreaming();
-  if (isActive) {
-    elements.sendButton.textContent = "Stop";
-    elements.sendButton.disabled = false;
-    elements.sendButton.classList.add("danger-button");
-    elements.sendButton.classList.remove("primary-button");
-  } else {
-    elements.sendButton.textContent = "Send";
-    elements.sendButton.disabled = locked || !state.selectedModel;
-    elements.sendButton.classList.remove("danger-button");
-    elements.sendButton.classList.add("primary-button");
-  }
+  renderSendButton(locked, isActive);
   elements.messageInput.disabled = isActive || locked;
   elements.attachButton.disabled = isActive || locked;
   elements.themeButton.setAttribute("aria-pressed", state.theme === "dark" ? "true" : "false");
   renderThemeButton();
   renderAutoScrollButton();
   renderChatToolsButton();
+  renderSpeechInputButton();
 }
 
 function renderChatToolbar() {
@@ -1209,38 +1368,11 @@ function renderTopBarActions() {
 }
 
 function renderModelOptions() {
-  const llmModels = state.models.filter(model => model.type === "llm");
-  const models = llmModels.length > 0 ? llmModels : state.models;
-
-  if (models.length === 0) {
-    elements.modelSelect.innerHTML = '<option value="">No models found</option>';
-    return;
-  }
-
-  elements.modelSelect.innerHTML = models
-    .map(model => `<option value="${escapeAttribute(model.key)}" ${model.key === state.selectedModel ? "selected" : ""}>${escapeHtml(buildModelOptionLabel(model))}</option>`)
-    .join("");
+  elements.modelSelect.innerHTML = buildModelSelectMarkup(state.selectedModel);
 }
 
 function renderReasoningOptions() {
-  const allowedOptions = findSelectedModel()?.capabilities?.reasoning?.allowedOptions || [];
-  const options = [{ value: "default", label: "Default" }, ...allowedOptions.map(option => ({ value: option, label: capitalize(option) }))];
-  if (options.length === 1 && allowedOptions.length === 0) {
-    options.push({ value: "off", label: "Off" });
-  }
-
-  if (!options.some(option => option.value === state.selectedReasoning)) {
-    state.selectedReasoning = "default";
-  }
-
-  elements.reasoningSelect.innerHTML = options
-    .map(option => `<option value="${escapeAttribute(option.value)}" ${option.value === state.selectedReasoning ? "selected" : ""}>${escapeHtml(option.label)}</option>`)
-    .join("");
-
-  const reasoningField = elements.reasoningSelect.closest("label.field");
-  if (reasoningField) {
-    reasoningField.hidden = allowedOptions.length === 0;
-  }
+  state.selectedReasoning = renderReasoningSelect(elements.reasoningSelect, state.selectedModel, state.selectedReasoning, "default");
 }
 
 function renderModelDetails() {
@@ -1292,6 +1424,16 @@ function renderModelDetails() {
 }
 
 function renderMcpServers() {
+  const mcpSection = elements.mcpList?.closest(".mcp-section");
+  if (mcpSection) {
+    mcpSection.hidden = !state.bootstrap?.mcpConfigured;
+  }
+
+  if (!state.bootstrap?.mcpConfigured) {
+    elements.mcpList.innerHTML = "";
+    return;
+  }
+
   if (state.mcpServers.length === 0) {
     elements.mcpList.innerHTML = '<p class="chat-preview">No MCP servers were found in the configured or uploaded mcp.json file.</p>';
     return;
@@ -1299,7 +1441,34 @@ function renderMcpServers() {
 
   elements.mcpList.innerHTML = state.mcpServers
     .map(server => {
-      const active = state.selectedMcpServerIds.has(server.id);
+      const active = state.defaultMcpServerIds.has(server.id);
+      return `
+        <button type="button" class="chip${active ? " active" : ""}" data-mcp-id="${escapeAttribute(server.id)}">
+          ${escapeHtml(server.label)}
+          <small>${escapeHtml(server.transport || server.description || "configured server")}</small>
+        </button>`;
+    })
+    .join("");
+}
+
+function renderDefaultToolsMenu() {
+  if (!elements.defaultToolsMcpList) {
+    return;
+  }
+
+  if (!state.bootstrap?.mcpConfigured) {
+    elements.defaultToolsMcpList.innerHTML = '<p class="chat-preview">Set or upload an MCP config to choose default tools.</p>';
+    return;
+  }
+
+  if (state.mcpServers.length === 0) {
+    elements.defaultToolsMcpList.innerHTML = '<p class="chat-preview">No MCP servers were found in the configured or uploaded mcp.json file.</p>';
+    return;
+  }
+
+  elements.defaultToolsMcpList.innerHTML = state.mcpServers
+    .map(server => {
+      const active = state.defaultMcpServerIds.has(server.id);
       return `
         <button type="button" class="chip${active ? " active" : ""}" data-mcp-id="${escapeAttribute(server.id)}">
           ${escapeHtml(server.label)}
@@ -1401,7 +1570,7 @@ function renderMessageCard(message) {
   const contentBlock = message.isError
     ? `<div class="message-error">${escapeHtml(message.content || "An error occurred.")}</div>`
     : message.content
-      ? `<div class="message-body markdown-body">${renderMarkdown(message.content)}</div>`
+      ? `<div class="message-body markdown-body">${renderMarkdown(message.content, { allowCodeCopy: message.role === "assistant" })}</div>`
       : message.pending
         ? `<div class="message-body">${message.thinkingActive ? "Generating reasoning..." : "Waiting for tokens..."}</div>`
         : "";
@@ -1410,7 +1579,7 @@ function renderMessageCard(message) {
     ? `
       <details class="details-block thinking-block${message.thinkingActive ? " active" : ""}" data-details-id="${escapeAttribute(message.id)}-reasoning">
         <summary><span>Thinking</span>${message.thinkingActive ? '<span class="thinking-indicator"><span class="thinking-indicator-dot" aria-hidden="true"></span>Live</span>' : ""}</summary>
-        <div class="details-body markdown-body">${renderMarkdown(message.reasoning)}</div>
+        <div class="details-body markdown-body">${renderMarkdown(message.reasoning, { allowCodeCopy: true })}</div>
       </details>`
     : "";
 
@@ -1443,11 +1612,15 @@ function renderMessageCard(message) {
   const canExport = Boolean(state.currentChatId) && !message.pending;
   const canRetry = Boolean(state.currentChatId) && !message.pending && message.role === "assistant" && isLatestAssistantMessage(message);
   const canEdit = Boolean(state.currentChatId) && !message.pending && message.role === "user" && !isCurrentChatActivelyStreaming() && !state.editingMessageId;
-  const actionsBlock = canExport || canRetry || canEdit
+  const canSpeak = message.role === "assistant" && !message.pending && Boolean(getSpeakableMessageText(message));
+  const canCopy = message.role === "assistant" && !message.pending && Boolean(String(message.content || ""));
+  const actionsBlock = canExport || canRetry || canEdit || canSpeak || canCopy
     ? `
       <div class="message-actions">
         ${canRetry ? `<button type="button" class="ghost-button icon-button message-action-icon" data-retry-chat="true" aria-label="Retry prompt" title="Retry prompt">${renderIcon("retry")}</button>` : ""}
         ${canEdit ? `<button type="button" class="ghost-button icon-button message-action-icon" data-edit-message-id="${escapeAttribute(message.id)}" aria-label="Edit message" title="Edit message">${renderIcon("pencil")}</button>` : ""}
+        ${canCopy ? `<button type="button" class="ghost-button icon-button message-action-icon" data-copy-message-id="${escapeAttribute(message.id)}" aria-label="Copy raw markdown" title="Copy raw markdown">${renderIcon("copy")}</button>` : ""}
+        ${canSpeak ? `<button type="button" class="ghost-button icon-button message-action-icon${state.speakingMessageId === message.id ? " is-active" : ""}" data-speak-message-id="${escapeAttribute(message.id)}" aria-label="${escapeAttribute(state.speakingMessageId === message.id ? "Stop reading aloud" : "Read aloud")}" title="${escapeAttribute(state.speakingMessageId === message.id ? "Stop reading aloud" : "Read aloud")}">${renderIcon(state.speakingMessageId === message.id ? "speakerOff" : "speaker")}</button>` : ""}
         ${canExport ? `<button type="button" class="ghost-button icon-button message-action-icon" data-export-message-id="${escapeAttribute(message.id)}" aria-label="Export Markdown" title="Export Markdown">${renderIcon("download")}</button>` : ""}
       </div>`
     : "";
@@ -1535,8 +1708,133 @@ function normalizeSelectedMcpServerIds(serverIds) {
   return normalizedIds;
 }
 
+function cloneSelectedMcpServerIds(serverIds) {
+  return normalizeSelectedMcpServerIds(Array.from(serverIds || []));
+}
+
+function selectedMcpServerSetsEqual(left, right) {
+  const leftIds = Array.from(left || []);
+  const rightIds = Array.from(right || []);
+  if (leftIds.length !== rightIds.length) {
+    return false;
+  }
+
+  return leftIds.every(serverId => right.has(serverId));
+}
+
+function toggleDefaultMcpServer(serverId) {
+  const previousDefaults = cloneSelectedMcpServerIds(state.defaultMcpServerIds);
+  if (state.defaultMcpServerIds.has(serverId)) {
+    state.defaultMcpServerIds.delete(serverId);
+  } else {
+    state.defaultMcpServerIds.add(serverId);
+  }
+
+  saveDefaultMcpServerIds(state.defaultMcpServerIds);
+  if (!state.currentChatId && selectedMcpServerSetsEqual(state.selectedMcpServerIds, previousDefaults)) {
+    state.selectedMcpServerIds = cloneSelectedMcpServerIds(state.defaultMcpServerIds);
+  }
+}
+
+function toggleActiveMcpServer(serverId) {
+  if (state.selectedMcpServerIds.has(serverId)) {
+    state.selectedMcpServerIds.delete(serverId);
+  } else {
+    state.selectedMcpServerIds.add(serverId);
+  }
+
+  if (state.currentChat) {
+    state.currentChat.selectedMcpServerIds = Array.from(state.selectedMcpServerIds);
+  }
+}
+
+function buildModelSelectMarkup(selectedModelKey) {
+  const llmModels = state.models.filter(model => model.type === "llm");
+  const models = llmModels.length > 0 ? llmModels : state.models;
+
+  if (models.length === 0) {
+    return '<option value="">No models found</option>';
+  }
+
+  return models
+    .map(model => `<option value="${escapeAttribute(model.key)}" ${model.key === selectedModelKey ? "selected" : ""}>${escapeHtml(buildModelOptionLabel(model))}</option>`)
+    .join("");
+}
+
+function renderReasoningSelect(selectElement, modelKey, selectedValue, defaultValue = "default") {
+  if (!selectElement) {
+    return selectedValue;
+  }
+
+  const allowedOptions = findModelByKey(modelKey)?.capabilities?.reasoning?.allowedOptions || [];
+  const options = [{ value: defaultValue, label: "Default" }, ...allowedOptions.map(option => ({ value: option, label: capitalize(option) }))];
+  const resolvedValue = options.some(option => option.value === selectedValue) ? selectedValue : defaultValue;
+
+  selectElement.innerHTML = options
+    .map(option => `<option value="${escapeAttribute(option.value)}" ${option.value === resolvedValue ? "selected" : ""}>${escapeHtml(option.label)}</option>`)
+    .join("");
+
+  const reasoningField = selectElement.closest("label.field");
+  if (reasoningField) {
+    reasoningField.hidden = false;
+  }
+  selectElement.disabled = allowedOptions.length === 0;
+  return resolvedValue;
+}
+
+function hasOwn(object, key) {
+  return Boolean(object) && Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function normalizeChatOverrideState(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const normalized = {};
+  if (hasOwn(payload, "systemPrompt")) {
+    normalized.systemPrompt = String(payload.systemPrompt || "");
+  }
+  if (hasOwn(payload, "reasoning")) {
+    normalized.reasoning = payload.reasoning === null ? null : String(payload.reasoning || "").trim() || null;
+  }
+  if (hasOwn(payload, "temperature")) {
+    normalized.temperature = typeof payload.temperature === "number" ? payload.temperature : null;
+  }
+  if (hasOwn(payload, "topK")) {
+    normalized.topK = typeof payload.topK === "number" ? payload.topK : null;
+  }
+  if (hasOwn(payload, "topP")) {
+    normalized.topP = typeof payload.topP === "number" ? payload.topP : null;
+  }
+  if (hasOwn(payload, "minP")) {
+    normalized.minP = typeof payload.minP === "number" ? payload.minP : null;
+  }
+  if (hasOwn(payload, "repeatPenalty")) {
+    normalized.repeatPenalty = typeof payload.repeatPenalty === "number" ? payload.repeatPenalty : null;
+  }
+
+  return Object.keys(normalized).length > 0 ? normalized : null;
+}
+
+function normalizeChatRecord(chat) {
+  if (!chat || typeof chat !== "object") {
+    return chat;
+  }
+
+  return {
+    ...chat,
+    chatOverrides: normalizeChatOverrideState(chat.chatOverrides),
+    selectedMcpServerIds: Array.isArray(chat.selectedMcpServerIds) ? chat.selectedMcpServerIds : [],
+  };
+}
+
 function findSelectedModel() {
   return state.models.find(model => model.key === state.selectedModel) || null;
+}
+
+function findModelByKey(modelKey) {
+  return state.models.find(model => model.key === modelKey) || null;
 }
 
 function getLoadedContextLength(model) {
@@ -1719,6 +2017,171 @@ function parseOptionalFloat(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function buildChatDefaultsPayload() {
+  return {
+    modelKey: state.selectedModel,
+    systemPrompt: state.systemPrompt,
+    reasoning: normalizeReasoningValue(),
+    contextLength: parseOptionalNumber(state.selectedContextLength),
+    temperature: parseOptionalFloat(state.selectedTemperature),
+    topK: parseOptionalNumber(state.selectedTopK),
+    topP: parseOptionalFloat(state.selectedTopP),
+    minP: parseOptionalFloat(state.selectedMinP),
+    repeatPenalty: parseOptionalFloat(state.selectedRepeatPenalty),
+  };
+}
+
+function buildDefaultChatRequestSettings() {
+  return {
+    modelKey: state.selectedModel,
+    systemPrompt: state.systemPrompt.trim() || null,
+    reasoning: normalizeReasoningValue(),
+    contextLength: parseOptionalNumber(state.selectedContextLength),
+    temperature: parseOptionalFloat(state.selectedTemperature),
+    topK: parseOptionalNumber(state.selectedTopK),
+    topP: parseOptionalFloat(state.selectedTopP),
+    minP: parseOptionalFloat(state.selectedMinP),
+    repeatPenalty: parseOptionalFloat(state.selectedRepeatPenalty),
+  };
+}
+
+function resolveActiveChatRequestSettings() {
+  const defaultSettings = buildDefaultChatRequestSettings();
+  const activeOverrides = normalizeChatOverrideState(state.currentChat?.chatOverrides);
+
+  if (!activeOverrides) {
+    return defaultSettings;
+  }
+
+  return {
+    ...defaultSettings,
+    systemPrompt: hasOwn(activeOverrides, "systemPrompt")
+      ? String(activeOverrides.systemPrompt || "").trim() || null
+      : defaultSettings.systemPrompt,
+    reasoning: hasOwn(activeOverrides, "reasoning")
+      ? activeOverrides.reasoning
+      : defaultSettings.reasoning,
+    temperature: hasOwn(activeOverrides, "temperature")
+      ? activeOverrides.temperature
+      : defaultSettings.temperature,
+    topK: hasOwn(activeOverrides, "topK")
+      ? activeOverrides.topK
+      : defaultSettings.topK,
+    topP: hasOwn(activeOverrides, "topP")
+      ? activeOverrides.topP
+      : defaultSettings.topP,
+    minP: hasOwn(activeOverrides, "minP")
+      ? activeOverrides.minP
+      : defaultSettings.minP,
+    repeatPenalty: hasOwn(activeOverrides, "repeatPenalty")
+      ? activeOverrides.repeatPenalty
+      : defaultSettings.repeatPenalty,
+  };
+}
+
+function buildChatRequestBody(options = {}) {
+  const resolvedSettings = resolveActiveChatRequestSettings();
+  const payload = {
+    chatId: options.chatId ?? state.currentChatId,
+    model: resolvedSettings.modelKey,
+    systemPrompt: resolvedSettings.systemPrompt,
+    reasoning: resolvedSettings.reasoning,
+    contextLength: resolvedSettings.contextLength,
+    temperature: resolvedSettings.temperature,
+    topK: resolvedSettings.topK,
+    topP: resolvedSettings.topP,
+    minP: resolvedSettings.minP,
+    repeatPenalty: resolvedSettings.repeatPenalty,
+    mcpServerIds: Array.from(normalizeSelectedMcpServerIds(Array.from(state.selectedMcpServerIds))),
+  };
+
+  if (!options.omitInput) {
+    payload.input = options.input ?? "";
+  }
+
+  if (!options.omitAttachments) {
+    payload.attachments = options.attachments ?? [];
+  }
+
+  return payload;
+}
+
+function buildEffectiveSystemPromptPreview() {
+  const basePrompt = String(resolveActiveChatRequestSettings().systemPrompt || "").trim();
+  const memorySummary = state.adaptiveMemory.enabled ? String(state.adaptiveMemory.summary || "").trim() : "";
+  if (!memorySummary) {
+    return basePrompt;
+  }
+
+  const memoryBlock = [
+    "Adaptive user memory:",
+    "Use this as compact, soft guidance about the user's preferences and interests. Do not quote it unless directly relevant.",
+    memorySummary
+  ].join("\n");
+
+  return basePrompt ? `${basePrompt}\n\n${memoryBlock}` : memoryBlock;
+}
+
+function applyChatDefaultsPayload(payload) {
+  const chatDefaults = payload?.chatDefaults || {};
+  if (chatDefaults.modelKey) {
+    state.selectedModel = chatDefaults.modelKey;
+  }
+
+  state.systemPrompt = String(chatDefaults.systemPrompt || "");
+  state.selectedReasoning = chatDefaults.reasoning || "default";
+  if (typeof chatDefaults.contextLength === "number") {
+    setContextLengthValue(chatDefaults.contextLength, { manual: true });
+  } else if (!state.selectedContextLength || !state.contextLengthManual) {
+    applySuggestedContextLength(findSelectedModel());
+  }
+  state.selectedTemperature = typeof chatDefaults.temperature === "number" ? String(chatDefaults.temperature) : "";
+  state.selectedTopK = typeof chatDefaults.topK === "number" ? String(chatDefaults.topK) : "";
+  state.selectedTopP = typeof chatDefaults.topP === "number" ? String(chatDefaults.topP) : "";
+  state.selectedMinP = typeof chatDefaults.minP === "number" ? String(chatDefaults.minP) : "";
+  state.selectedRepeatPenalty = typeof chatDefaults.repeatPenalty === "number" ? String(chatDefaults.repeatPenalty) : "";
+  state.adaptiveMemory = normalizeAdaptiveMemoryState(payload?.adaptiveMemory);
+}
+
+function normalizeAdaptiveMemoryState(adaptiveMemory) {
+  return {
+    enabled: adaptiveMemory?.enabled === true,
+    maxWords: Math.max(50, Number.parseInt(adaptiveMemory?.maxWords, 10) || 500),
+    summary: String(adaptiveMemory?.summary || "").trim(),
+    lastUpdatedUtc: String(adaptiveMemory?.lastUpdatedUtc || ""),
+    lastReviewedUtc: String(adaptiveMemory?.lastReviewedUtc || ""),
+    sourceCursorUtc: String(adaptiveMemory?.sourceCursorUtc || ""),
+  };
+}
+
+function scheduleChatDefaultsSave() {
+  if (state.chatDefaultsSaveTimer) {
+    clearTimeout(state.chatDefaultsSaveTimer);
+  }
+
+  state.chatDefaultsSaveTimer = setTimeout(() => {
+    state.chatDefaultsSaveTimer = null;
+    void persistChatDefaults();
+  }, 350);
+}
+
+async function persistChatDefaults() {
+  if (state.bootstrap?.requireLogin && !state.bootstrap?.authenticated) {
+    return;
+  }
+
+  try {
+    const payload = await fetchJson("/api/chat-defaults", {
+      method: "POST",
+      body: JSON.stringify({ chatDefaults: buildChatDefaultsPayload() }),
+    });
+    applyChatDefaultsPayload(payload);
+    renderControls();
+  } catch (error) {
+    setStatus(error.message || "Unable to save model defaults.", "error");
+  }
+}
+
 function summarizeTitle(input) {
   const trimmed = input.replace(/\s+/g, " ").trim();
   return trimmed.length <= 60 ? trimmed : `${trimmed.slice(0, 57)}...`;
@@ -1741,6 +2204,24 @@ async function autoTitleChat(chatId, input) {
   } catch {
     // Non-critical — silently ignore
   }
+}
+
+async function ensureChatHasAutoTitle(chat) {
+  if (!shouldAutoTitleChat(chat?.title)) {
+    return;
+  }
+
+  const firstUserMessage = (chat?.messages || []).find(message => message.role === "user" && String(message.content || "").trim());
+  if (!firstUserMessage?.content || !chat?.id) {
+    return;
+  }
+
+  await autoTitleChat(chat.id, firstUserMessage.content);
+}
+
+function shouldAutoTitleChat(title) {
+  const normalized = String(title || "").trim().toLowerCase();
+  return !normalized || normalized === "new chat";
 }
 
 function formatClock(value) {
@@ -1976,7 +2457,7 @@ function estimatePendingInputTokens(pendingAssistant) {
     return anchorUsedTokens + latestUserTokens;
   }
 
-  let total = estimateSystemPromptTokens(state.systemPrompt);
+  let total = estimateSystemPromptTokens(buildEffectiveSystemPromptPreview());
   for (let index = 0; index <= latestUserIndex; index += 1) {
     total += estimateVisibleMessageTokens(messages[index]);
   }
@@ -2139,13 +2620,46 @@ function resolveModelKeyFromInstanceId(instanceId) {
   return state.models.find(model => (model.loadedInstances || []).some(instance => instance.id === instanceId) || model.key === instanceId)?.key || null;
 }
 
-function openModelMenu() {
+function openModelMenu(section = null) {
+  closeChatOverrideMenu();
+  closeDefaultToolsMenu();
   elements.settingsScreen.hidden = true;
   elements.modelScreen.hidden = false;
+  if (section === "tools") {
+    focusModelToolsSection();
+  }
 }
 
 function closeModelMenu() {
   elements.modelScreen.hidden = true;
+}
+
+function openDefaultToolsMenu() {
+  closeChatOverrideMenu();
+  closeModelMenu();
+  closeSettings();
+  renderDefaultToolsMenu();
+  elements.defaultToolsScreen.hidden = false;
+}
+
+function closeDefaultToolsMenu() {
+  if (!elements.defaultToolsScreen) {
+    return;
+  }
+
+  elements.defaultToolsScreen.hidden = true;
+}
+
+function focusModelToolsSection() {
+  if (elements.modelAdvancedPanel) {
+    elements.modelAdvancedPanel.open = true;
+  }
+
+  if (elements.modelToolsSection) {
+    queueMicrotask(() => {
+      elements.modelToolsSection.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  }
 }
 
 function loadThemePreference() {
@@ -2283,6 +2797,230 @@ function renderChatToolsButton() {
   elements.chatToolsButton.setAttribute("aria-label", label);
 }
 
+function renderSendButton(locked, isActive) {
+  const label = isActive ? "Stop response" : "Send message";
+  const activeModelKey = resolveActiveChatRequestSettings().modelKey;
+  setButtonIcon(elements.sendButton, isActive ? "stop" : "send");
+  elements.sendButton.title = label;
+  elements.sendButton.setAttribute("aria-label", label);
+  elements.sendButton.disabled = isActive ? false : locked || !activeModelKey;
+  elements.sendButton.classList.toggle("danger-button", isActive);
+  elements.sendButton.classList.toggle("primary-button", !isActive);
+}
+
+function openChatOverrideMenu() {
+  if (!state.currentChat) {
+    startNewDraft();
+  }
+
+  closeChatToolsPopup();
+  closeDefaultToolsMenu();
+  closeModelMenu();
+  closeSettings();
+  state.chatOverrideDraft = buildChatOverrideDraft();
+  elements.chatOverrideScreen.hidden = false;
+  renderChatOverrideMenu();
+}
+
+function closeChatOverrideMenu() {
+  if (!elements.chatOverrideScreen) {
+    return;
+  }
+
+  elements.chatOverrideScreen.hidden = true;
+  state.chatOverrideDraft = null;
+}
+
+function buildChatOverrideDraft() {
+  const overrides = normalizeChatOverrideState(state.currentChat?.chatOverrides);
+  return {
+    systemPrompt: hasOwn(overrides, "systemPrompt") ? overrides.systemPrompt : state.systemPrompt,
+    reasoning: hasOwn(overrides, "reasoning")
+      ? (overrides.reasoning === null ? "default" : overrides.reasoning)
+      : state.selectedReasoning,
+    temperature: hasOwn(overrides, "temperature") && overrides.temperature !== null ? String(overrides.temperature) : hasOwn(overrides, "temperature") ? "" : state.selectedTemperature,
+    topK: hasOwn(overrides, "topK") && overrides.topK !== null ? String(overrides.topK) : hasOwn(overrides, "topK") ? "" : state.selectedTopK,
+    topP: hasOwn(overrides, "topP") && overrides.topP !== null ? String(overrides.topP) : hasOwn(overrides, "topP") ? "" : state.selectedTopP,
+    minP: hasOwn(overrides, "minP") && overrides.minP !== null ? String(overrides.minP) : hasOwn(overrides, "minP") ? "" : state.selectedMinP,
+    repeatPenalty: hasOwn(overrides, "repeatPenalty") && overrides.repeatPenalty !== null ? String(overrides.repeatPenalty) : hasOwn(overrides, "repeatPenalty") ? "" : state.selectedRepeatPenalty,
+  };
+}
+
+function readChatOverrideDraftFromInputs() {
+  return {
+    systemPrompt: elements.chatOverrideSystemPromptInput?.value || "",
+    reasoning: elements.chatOverrideReasoningSelect?.value || "default",
+    temperature: elements.chatOverrideTemperatureInput?.value.trim() || "",
+    topK: elements.chatOverrideTopKInput?.value.trim() || "",
+    topP: elements.chatOverrideTopPInput?.value.trim() || "",
+    minP: elements.chatOverrideMinPInput?.value.trim() || "",
+    repeatPenalty: elements.chatOverrideRepeatPenaltyInput?.value.trim() || "",
+  };
+}
+
+function buildPersistedChatOverridePayload(draft) {
+  if (!draft) {
+    return null;
+  }
+
+  const payload = {};
+  if (draft.systemPrompt !== state.systemPrompt) {
+    payload.systemPrompt = draft.systemPrompt;
+  }
+
+  if (draft.reasoning !== state.selectedReasoning) {
+    payload.reasoning = draft.reasoning === "default" ? null : draft.reasoning;
+  }
+
+  const draftTemperature = parseOptionalFloat(draft.temperature);
+  const draftTopK = parseOptionalNumber(draft.topK);
+  const draftTopP = parseOptionalFloat(draft.topP);
+  const draftMinP = parseOptionalFloat(draft.minP);
+  const draftRepeatPenalty = parseOptionalFloat(draft.repeatPenalty);
+
+  if (!optionalValuesEqual(draftTemperature, parseOptionalFloat(state.selectedTemperature))) {
+    payload.temperature = draftTemperature;
+  }
+  if (!optionalValuesEqual(draftTopK, parseOptionalNumber(state.selectedTopK))) {
+    payload.topK = draftTopK;
+  }
+  if (!optionalValuesEqual(draftTopP, parseOptionalFloat(state.selectedTopP))) {
+    payload.topP = draftTopP;
+  }
+  if (!optionalValuesEqual(draftMinP, parseOptionalFloat(state.selectedMinP))) {
+    payload.minP = draftMinP;
+  }
+  if (!optionalValuesEqual(draftRepeatPenalty, parseOptionalFloat(state.selectedRepeatPenalty))) {
+    payload.repeatPenalty = draftRepeatPenalty;
+  }
+
+  return Object.keys(payload).length > 0 ? payload : null;
+}
+
+function renderChatOverrideMenu() {
+  if (!elements.chatOverrideScreen || elements.chatOverrideScreen.hidden || !state.chatOverrideDraft) {
+    return;
+  }
+
+  elements.chatOverrideSystemPromptInput.value = state.chatOverrideDraft.systemPrompt;
+  elements.chatOverrideTemperatureInput.value = state.chatOverrideDraft.temperature;
+  elements.chatOverrideTopKInput.value = state.chatOverrideDraft.topK;
+  elements.chatOverrideTopPInput.value = state.chatOverrideDraft.topP;
+  elements.chatOverrideMinPInput.value = state.chatOverrideDraft.minP;
+  elements.chatOverrideRepeatPenaltyInput.value = state.chatOverrideDraft.repeatPenalty;
+  state.chatOverrideDraft.reasoning = renderReasoningSelect(
+    elements.chatOverrideReasoningSelect,
+    state.selectedModel,
+    state.chatOverrideDraft.reasoning,
+    "default"
+  );
+
+  const mcpSection = elements.chatOverrideMcpList?.closest(".mcp-section");
+  if (mcpSection) {
+    mcpSection.hidden = !state.bootstrap?.mcpConfigured;
+  }
+
+  if (!state.bootstrap?.mcpConfigured) {
+    elements.chatOverrideMcpList.innerHTML = "";
+    return;
+  }
+
+  if (state.mcpServers.length === 0) {
+    elements.chatOverrideMcpList.innerHTML = '<p class="chat-preview">No MCP servers configured.</p>';
+    return;
+  }
+
+  elements.chatOverrideMcpList.innerHTML = state.mcpServers
+    .map(server => {
+      const active = state.selectedMcpServerIds.has(server.id);
+      return `
+        <button type="button" class="chip${active ? " active" : ""}" data-mcp-id="${escapeAttribute(server.id)}">
+          ${escapeHtml(server.label)}
+          <small>${escapeHtml(server.transport || server.description || "configured server")}</small>
+        </button>`;
+    })
+    .join("");
+}
+
+function resetChatOverrides() {
+  state.chatOverrideDraft = {
+    systemPrompt: state.systemPrompt,
+    reasoning: state.selectedReasoning,
+    temperature: state.selectedTemperature,
+    topK: state.selectedTopK,
+    topP: state.selectedTopP,
+    minP: state.selectedMinP,
+    repeatPenalty: state.selectedRepeatPenalty,
+  };
+  state.selectedMcpServerIds = cloneSelectedMcpServerIds(state.defaultMcpServerIds);
+  renderChatOverrideMenu();
+  renderChatToolsPopup();
+  renderChatToolsButton();
+}
+
+async function saveChatOverrides() {
+  state.chatOverrideDraft = readChatOverrideDraftFromInputs();
+  await persistCurrentChatOverrides({ closeOnSuccess: true });
+}
+
+async function persistCurrentChatOverrides(options = {}) {
+  if (!state.currentChat) {
+    return null;
+  }
+
+  const draft = state.chatOverrideDraft || buildChatOverrideDraft();
+  const chatOverrides = buildPersistedChatOverridePayload(draft);
+  state.currentChat.chatOverrides = chatOverrides;
+  state.currentChat.selectedMcpServerIds = Array.from(state.selectedMcpServerIds);
+
+  if (!state.currentChatId) {
+    if (options.closeOnSuccess) {
+      closeChatOverrideMenu();
+    }
+    render();
+    if (!options.silent) {
+      setStatus("Chat overrides will be applied to the next message in this draft.", "neutral");
+    }
+    return state.currentChat;
+  }
+
+  try {
+    const updatedChat = normalizeChatRecord(await fetchJson(`/api/chats/${encodeURIComponent(state.currentChatId)}/overrides`, {
+      method: "POST",
+      body: JSON.stringify({
+        chatOverrides,
+        mcpServerIds: Array.from(normalizeSelectedMcpServerIds(Array.from(state.selectedMcpServerIds))),
+      }),
+    }));
+
+    state.currentChat = updatedChat;
+    state.selectedMcpServerIds = normalizeSelectedMcpServerIds(updatedChat.selectedMcpServerIds || []);
+    if (options.closeOnSuccess) {
+      closeChatOverrideMenu();
+    } else if (!elements.chatOverrideScreen.hidden) {
+      state.chatOverrideDraft = buildChatOverrideDraft();
+    }
+    if (options.rerender !== false) {
+      render();
+    } else {
+      renderChatToolsButton();
+    }
+    if (!options.silent) {
+      setStatus("Chat override settings saved.", "neutral");
+    }
+    return updatedChat;
+  } catch (error) {
+    if (!options.silent) {
+      setStatus(error.message || "Unable to save chat overrides.", "error");
+    }
+    return null;
+  }
+}
+
+function optionalValuesEqual(left, right) {
+  return left === right || (left === null && right === null);
+}
+
 function toggleAutoScroll() {
   state.autoScrollEnabled = !state.autoScrollEnabled;
   saveAutoScrollPreference(state.autoScrollEnabled);
@@ -2298,17 +3036,19 @@ function toggleAutoScroll() {
 }
 
 function renderAutoScrollButton() {
-  if (!elements.autoScrollButton) {
+  if (!elements.autoScrollButton && !elements.settingsAutoScrollButton) {
     return;
   }
 
   const enabled = state.autoScrollEnabled;
-  setButtonIcon(elements.autoScrollButton, enabled ? "autoscrollOn" : "autoscrollOff");
   const label = enabled ? "Disable auto-scroll" : "Enable auto-scroll";
-  elements.autoScrollButton.title = label;
-  elements.autoScrollButton.setAttribute("aria-label", label);
-  elements.autoScrollButton.setAttribute("aria-pressed", enabled ? "true" : "false");
-  elements.autoScrollButton.classList.toggle("is-active", enabled);
+  [elements.autoScrollButton, elements.settingsAutoScrollButton].filter(Boolean).forEach(button => {
+    setButtonIcon(button, enabled ? "autoscrollOn" : "autoscrollOff");
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.setAttribute("aria-pressed", enabled ? "true" : "false");
+    button.classList.toggle("is-active", enabled);
+  });
 }
 
 async function deleteChat(chatId) {
@@ -2416,14 +3156,7 @@ async function retryLatestPrompt() {
     return;
   }
 
-  const requestBody = {
-    model: state.selectedModel,
-    systemPrompt: state.systemPrompt.trim() || null,
-    reasoning: normalizeReasoningValue(),
-    contextLength: parseOptionalNumber(state.selectedContextLength),
-    temperature: parseOptionalFloat(state.selectedTemperature),
-    mcpServerIds: Array.from(normalizeSelectedMcpServerIds(Array.from(state.selectedMcpServerIds))),
-  };
+  const requestBody = buildChatRequestBody({ chatId: state.currentChatId, omitInput: true, omitAttachments: true });
 
   const pendingAssistant = {
     id: `retry_${Date.now()}`,
@@ -2435,7 +3168,7 @@ async function retryLatestPrompt() {
     toolCalls: [],
     invalidToolCalls: [],
     attachments: [],
-    modelKey: state.selectedModel,
+    modelKey: requestBody.model,
     stats: null,
     createdAt: new Date().toISOString(),
     pending: true,
@@ -2451,12 +3184,16 @@ async function retryLatestPrompt() {
   }
   const expectedMessageCount = state.currentChat.messages.length + 1;
   state.currentChat.messages.push(pendingAssistant);
-  state.currentChat.modelKey = state.selectedModel;
-  state.currentChat.systemPrompt = state.systemPrompt;
-  state.currentChat.reasoning = normalizeReasoningValue();
-  state.currentChat.contextLength = parseOptionalNumber(state.selectedContextLength);
-  state.currentChat.temperature = parseOptionalFloat(state.selectedTemperature);
-  state.currentChat.selectedMcpServerIds = Array.from(normalizeSelectedMcpServerIds(Array.from(state.selectedMcpServerIds)));
+  state.currentChat.modelKey = requestBody.model;
+  state.currentChat.systemPrompt = requestBody.systemPrompt;
+  state.currentChat.reasoning = requestBody.reasoning;
+  state.currentChat.contextLength = requestBody.contextLength;
+  state.currentChat.temperature = requestBody.temperature;
+  state.currentChat.topK = requestBody.topK;
+  state.currentChat.topP = requestBody.topP;
+  state.currentChat.minP = requestBody.minP;
+  state.currentChat.repeatPenalty = requestBody.repeatPenalty;
+  state.currentChat.selectedMcpServerIds = Array.from(normalizeSelectedMcpServerIds(requestBody.mcpServerIds));
   state.isSending = true;
   state.stickToBottom = state.autoScrollEnabled;
   state.streamingChatIds.add(state.currentChatId);
@@ -2720,17 +3457,7 @@ async function saveAndRegenerateMessage(messageId, newContent) {
     return;
   }
 
-  const requestBody = {
-    chatId: state.currentChatId,
-    model: state.selectedModel,
-    input: newContent.trim(),
-    systemPrompt: state.systemPrompt.trim() || null,
-    reasoning: normalizeReasoningValue(),
-    contextLength: parseOptionalNumber(state.selectedContextLength),
-    temperature: parseOptionalFloat(state.selectedTemperature),
-    mcpServerIds: Array.from(normalizeSelectedMcpServerIds(Array.from(state.selectedMcpServerIds))),
-    attachments: [],
-  };
+  const requestBody = buildChatRequestBody({ chatId: state.currentChatId, input: newContent.trim(), attachments: [] });
 
   const pendingAssistant = {
     id: `edit_${Date.now()}`,
@@ -2742,7 +3469,7 @@ async function saveAndRegenerateMessage(messageId, newContent) {
     toolCalls: [],
     invalidToolCalls: [],
     attachments: [],
-    modelKey: state.selectedModel,
+    modelKey: requestBody.model,
     stats: null,
     createdAt: new Date().toISOString(),
     pending: true,
@@ -2757,11 +3484,21 @@ async function saveAndRegenerateMessage(messageId, newContent) {
     toolCalls: [],
     invalidToolCalls: [],
     attachments: [],
-    modelKey: state.selectedModel,
+    modelKey: requestBody.model,
     stats: null,
     createdAt: new Date().toISOString(),
   });
   state.currentChat.messages.push(pendingAssistant);
+  state.currentChat.modelKey = requestBody.model;
+  state.currentChat.systemPrompt = requestBody.systemPrompt;
+  state.currentChat.reasoning = requestBody.reasoning;
+  state.currentChat.contextLength = requestBody.contextLength;
+  state.currentChat.temperature = requestBody.temperature;
+  state.currentChat.topK = requestBody.topK;
+  state.currentChat.topP = requestBody.topP;
+  state.currentChat.minP = requestBody.minP;
+  state.currentChat.repeatPenalty = requestBody.repeatPenalty;
+  state.currentChat.selectedMcpServerIds = Array.from(normalizeSelectedMcpServerIds(requestBody.mcpServerIds));
 
   state.editingMessageId = null;
   state.editDraftContent = "";
@@ -2836,13 +3573,14 @@ async function saveAndRegenerateMessage(messageId, newContent) {
   }
 }
 
-function renderMarkdown(value) {
+function renderMarkdown(value, options = {}) {
   const normalized = sanitizeMarkdownSource(String(value || "")).replace(/\r/g, "");
   if (!normalized.trim()) {
     return "";
   }
 
   const lines = normalized.split("\n");
+  const allowCodeCopy = Boolean(options?.allowCodeCopy);
   let html = "";
   let paragraphLines = [];
   let listType = null;
@@ -2876,7 +3614,7 @@ function renderMarkdown(value) {
       return;
     }
 
-    html += `<blockquote>${renderMarkdown(quoteLines.join("\n"))}</blockquote>`;
+    html += `<blockquote>${renderMarkdown(quoteLines.join("\n"), options)}</blockquote>`;
     quoteLines = [];
   };
 
@@ -2886,7 +3624,10 @@ function renderMarkdown(value) {
     }
 
     const languageClass = codeLanguage ? ` class="language-${escapeAttribute(codeLanguage)}"` : "";
-    html += `<pre class="markdown-code"><code${languageClass}>${escapeHtml(codeLines.join("\n"))}</code></pre>`;
+    const codeHtml = `<pre class="markdown-code"><code${languageClass}>${escapeHtml(codeLines.join("\n"))}</code></pre>`;
+    html += allowCodeCopy
+      ? `<div class="markdown-code-shell"><div class="markdown-code-toolbar"><button type="button" class="ghost-button icon-button message-action-icon markdown-code-copy-button" data-copy-code-block="true" aria-label="Copy code block" title="Copy code block">${renderIcon("copy")}</button></div>${codeHtml}</div>`
+      : codeHtml;
     codeFenceMarker = null;
     codeLanguage = null;
     codeLines = [];
@@ -3019,9 +3760,28 @@ function sanitizeMarkdownSource(value) {
   }).join("\n");
 }
 
+function renderInlineMarkdownStyles(value) {
+  let output = String(value || "");
+
+  output = output.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  output = output.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+  output = output.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+  output = output.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  output = output.replace(/_([^_]+)_/g, "<em>$1</em>");
+
+  return output;
+}
+
 function renderInlineMarkdown(value) {
   const codeTokens = [];
+  const htmlTokens = [];
   let output = escapeHtml(value || "");
+
+  const pushHtmlToken = html => {
+    const token = `%%HTML${htmlTokens.length}%%`;
+    htmlTokens.push(html);
+    return token;
+  };
 
   output = output.replace(/`([^`]+)`/g, (_, code) => {
     const token = `%%CODE${codeTokens.length}%%`;
@@ -3035,7 +3795,7 @@ function renderInlineMarkdown(value) {
       return alt ? escapeHtml(alt) : "";
     }
 
-    return `<img src="${escapeAttribute(safeUrl)}" alt="${escapeAttribute(alt)}" loading="lazy" />`;
+    return pushHtmlToken(`<img src="${escapeAttribute(safeUrl)}" alt="${escapeAttribute(alt)}" loading="lazy" />`);
   });
 
   output = output.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
@@ -3044,7 +3804,7 @@ function renderInlineMarkdown(value) {
       return label;
     }
 
-    return `<a href="${escapeAttribute(safeUrl)}" target="_blank" rel="noreferrer noopener">${label}</a>`;
+    return pushHtmlToken(`<a href="${escapeAttribute(safeUrl)}" target="_blank" rel="noreferrer noopener">${renderInlineMarkdownStyles(label)}</a>`);
   });
 
   output = output.replace(/\b(https?:\/\/[^\s<]+[^<.,;:"')\]\s])/g, match => {
@@ -3053,14 +3813,14 @@ function renderInlineMarkdown(value) {
       return match;
     }
 
-    return `<a href="${escapeAttribute(safeUrl)}" target="_blank" rel="noreferrer noopener">${match}</a>`;
+    return pushHtmlToken(`<a href="${escapeAttribute(safeUrl)}" target="_blank" rel="noreferrer noopener">${match}</a>`);
   });
 
-  output = output.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  output = output.replace(/__([^_]+)__/g, "<strong>$1</strong>");
-  output = output.replace(/~~([^~]+)~~/g, "<del>$1</del>");
-  output = output.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-  output = output.replace(/_([^_]+)_/g, "<em>$1</em>");
+  output = renderInlineMarkdownStyles(output);
+
+  htmlTokens.forEach((token, index) => {
+    output = output.replace(`%%HTML${index}%%`, token);
+  });
 
   codeTokens.forEach((token, index) => {
     output = output.replace(`%%CODE${index}%%`, token);
@@ -3234,6 +3994,12 @@ async function openSettings() {
       : "Optional API token";
     elements.settingsMcpPath.value = settings.mcpConfigPath || "";
     elements.settingsChatFontScale.value = String(normalizeChatFontScale(settings.chatFontScale));
+    if (elements.settingsAdaptiveMemoryEnabled) {
+      elements.settingsAdaptiveMemoryEnabled.checked = settings.adaptiveMemory?.enabled === true;
+    }
+    if (elements.settingsAdaptiveMemoryMaxWords) {
+      elements.settingsAdaptiveMemoryMaxWords.value = String(Math.max(50, Number.parseInt(settings.adaptiveMemory?.maxWords, 10) || 500));
+    }
     if (elements.settingsEnterKeyBehavior) {
       elements.settingsEnterKeyBehavior.value = loadEnterKeyBehavior();
     }
@@ -3251,7 +4017,13 @@ async function openSettings() {
     elements.settingsStatus.hidden = true;
     elements.settingsStatus.textContent = "";
     elements.modelScreen.hidden = true;
+    closeDefaultToolsMenu();
+    closeChatOverrideMenu();
     renderSettingsSecurityState();
+    renderAdaptiveMemorySettingsState();
+    renderThemeButton();
+    renderAutoScrollButton();
+    renderMemoryDownloadButton();
     elements.settingsScreen.hidden = false;
   } catch (error) {
     setStatus("Unable to load settings.", "error");
@@ -3287,6 +4059,14 @@ async function saveSettings() {
     mcpConfigPath: elements.settingsMcpPath.value.trim(),
     mcpConfigUpload,
     chatFontScale: normalizeChatFontScale(elements.settingsChatFontScale?.value),
+    adaptiveMemory: {
+      enabled: elements.settingsAdaptiveMemoryEnabled?.checked === true,
+      maxWords: Math.max(50, Number.parseInt(elements.settingsAdaptiveMemoryMaxWords?.value, 10) || 500),
+      summary: state.adaptiveMemory.summary,
+      lastUpdatedUtc: state.adaptiveMemory.lastUpdatedUtc,
+      lastReviewedUtc: state.adaptiveMemory.lastReviewedUtc,
+      sourceCursorUtc: state.adaptiveMemory.sourceCursorUtc,
+    },
     requireLogin: elements.settingsRequireLogin?.checked || false,
     pin: elements.settingsPin?.value.trim() || "",
   };
@@ -3309,11 +4089,17 @@ async function saveSettings() {
     }
     state.chatFontScale = normalizeChatFontScale(settings.chatFontScale);
     applyChatFontScale(state.chatFontScale);
+    state.adaptiveMemory = normalizeAdaptiveMemoryState(settings.adaptiveMemory);
     const savedEnterBehavior = elements.settingsEnterKeyBehavior?.value === "newline" ? "newline" : "send";
     saveEnterKeyBehavior(savedEnterBehavior);
     state.enterKeyBehavior = savedEnterBehavior;
+    if (state.autoScrollEnabled) {
+      state.stickToBottom = true;
+      syncMessageScroll(true);
+    }
     renderSelectedMcpConfigLabel(settings.mcpConfigPath);
     renderSettingsSecurityState();
+    renderMemoryDownloadButton();
 
     await refreshBootstrap();
     render();
@@ -3350,6 +4136,117 @@ function renderSettingsSecurityState() {
       ? "Leave the PIN blank to keep the current one, or enter a new PIN to replace it."
       : "Enter a PIN to enable sign-in."
     : "Sign-in is currently disabled.";
+}
+
+function renderAdaptiveMemorySettingsState() {
+  if (!elements.settingsAdaptiveMemoryEnabled || !elements.settingsAdaptiveMemoryMaxWords) {
+    return;
+  }
+
+  const enabled = elements.settingsAdaptiveMemoryEnabled.checked;
+  const wordLimitField = elements.settingsAdaptiveMemoryMaxWords.closest("label.field");
+  if (wordLimitField) {
+    wordLimitField.hidden = !enabled;
+  }
+  elements.settingsAdaptiveMemoryMaxWords.disabled = !enabled;
+  renderMemoryDownloadButton();
+}
+
+async function copyMessageMarkdown(messageId) {
+  const message = (state.currentChat?.messages || []).find(candidate => candidate.id === messageId && candidate.role === "assistant");
+  const markdown = String(message?.content || "");
+  if (!markdown) {
+    setStatus("No markdown available to copy.", "error");
+    return;
+  }
+
+  try {
+    await writeTextToClipboard(markdown);
+    setStatus("Raw markdown copied.", "neutral");
+  } catch {
+    setStatus("Unable to copy markdown.", "error");
+  }
+}
+
+async function copyCodeBlockRaw(button) {
+  const codeElement = button?.closest(".markdown-code-shell")?.querySelector("code");
+  if (!codeElement) {
+    setStatus("No code block available to copy.", "error");
+    return;
+  }
+
+  try {
+    await writeTextToClipboard(codeElement.textContent || "");
+    setStatus("Code block copied.", "neutral");
+  } catch {
+    setStatus("Unable to copy code block.", "error");
+  }
+}
+
+async function writeTextToClipboard(value) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "readonly");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.append(textarea);
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+
+  const copied = document.execCommand("copy");
+  textarea.remove();
+  if (!copied) {
+    throw new Error("Copy failed");
+  }
+}
+
+function renderMemoryDownloadButton() {
+  if (!elements.settingsDownloadMemoryButton) {
+    return;
+  }
+
+  const hasSummary = Boolean(String(state.adaptiveMemory.summary || "").trim());
+  elements.settingsDownloadMemoryButton.disabled = !hasSummary;
+  elements.settingsDownloadMemoryButton.title = hasSummary ? "Download adaptive memory file" : "No adaptive memory summary available yet";
+  elements.settingsDownloadMemoryButton.setAttribute("aria-label", elements.settingsDownloadMemoryButton.title);
+}
+
+function downloadAdaptiveMemoryFile() {
+  if (!String(state.adaptiveMemory.summary || "").trim()) {
+    return;
+  }
+
+  const blob = new Blob([buildAdaptiveMemoryMarkdown()], { type: "text/markdown;charset=utf-8" });
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = `adaptive-memory-${new Date().toISOString().slice(0, 10)}.md`;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
+function buildAdaptiveMemoryMarkdown() {
+  const lines = [
+    "# Adaptive Memory",
+    "",
+    `- Enabled: ${state.adaptiveMemory.enabled ? "Yes" : "No"}`,
+    `- Word limit: ${state.adaptiveMemory.maxWords || 500}`,
+    `- Last updated: ${state.adaptiveMemory.lastUpdatedUtc || "Not yet generated"}`,
+    `- Last reviewed: ${state.adaptiveMemory.lastReviewedUtc || "Not yet reviewed"}`,
+    "",
+    state.adaptiveMemory.summary || "No adaptive memory summary is available yet.",
+    ""
+  ];
+
+  return lines.join("\n");
 }
 
 function normalizeChatFontScale(value) {
@@ -3508,25 +4405,53 @@ function promptDeleteChat(chatId) {
 function renderActionIcons() {
   setButtonIcon(elements.drawerToggle, "menu");
   setButtonIcon(elements.modelButton, "sliders");
+  setButtonIcon(elements.topToolsButton, "tools");
   setButtonIcon(elements.exportChatButton, "download");
   setButtonIcon(elements.deleteChatButton, "trash");
   setButtonIcon(elements.settingsButton, "gear");
+  setButtonIcon(elements.chatOverrideButton, "ellipsis");
   setButtonIcon(elements.logoutButton, "lock");
   setButtonIcon(elements.chatToolsButton, "tools");
+  setButtonIcon(elements.speechInputButton, "mic");
   setButtonIcon(elements.attachButton, "paperclip");
   setButtonIcon(elements.settingsMcpUploadButton, "paperclip");
+  setButtonIcon(elements.settingsDownloadMemoryButton, "download");
   setButtonIcon(elements.configBannerDismiss, "close");
   setButtonIcon(elements.modelRefreshButton, "refresh");
   renderThemeButton();
   renderAutoScrollButton();
+  renderSpeechInputButton();
   renderTopBarActions();
 }
 
+function renderSpeechInputButton() {
+  if (!elements.speechInputButton) {
+    return;
+  }
+
+  const supported = Boolean(SpeechRecognitionCtor);
+  const active = state.isDictating;
+  setButtonIcon(elements.speechInputButton, active ? "micOff" : "mic");
+  elements.speechInputButton.disabled = !supported;
+  elements.speechInputButton.classList.toggle("is-active", active);
+  const label = !supported
+    ? "Dictation is not supported in this browser"
+    : active
+      ? "Stop dictation"
+      : "Start dictation";
+  elements.speechInputButton.title = label;
+  elements.speechInputButton.setAttribute("aria-label", label);
+}
+
 function renderThemeButton() {
-  setButtonIcon(elements.themeButton, state.theme === "dark" ? "sun" : "moon");
   const label = state.theme === "dark" ? "Switch to light mode" : "Switch to dark mode";
-  elements.themeButton.title = label;
-  elements.themeButton.setAttribute("aria-label", label);
+  [elements.themeButton, elements.settingsThemeButton].filter(Boolean).forEach(button => {
+    setButtonIcon(button, state.theme === "dark" ? "sun" : "moon");
+    button.title = label;
+    button.setAttribute("aria-label", label);
+    button.setAttribute("aria-pressed", state.theme === "dark" ? "true" : "false");
+    button.classList.toggle("is-active", state.theme === "dark");
+  });
 }
 
 function setButtonIcon(element, iconName) {
@@ -3549,6 +4474,12 @@ function renderIcon(iconName) {
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16"></path><path d="M4 12h16"></path><path d="M4 18h16"></path><circle cx="9" cy="6" r="2"></circle><circle cx="15" cy="12" r="2"></circle><circle cx="11" cy="18" r="2"></circle></svg>';
     case "download":
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10"></path><path d="m8 10 4 4 4-4"></path><path d="M5 19h14"></path></svg>';
+    case "copy":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="10" height="10" rx="2"></rect><path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1"></path></svg>';
+    case "send":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20 12-15-7 4 7-4 7 15-7Z"></path></svg>';
+    case "stop":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>';
     case "trash":
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M6 7l1 12h10l1-12"></path><path d="M9 7V4h6v3"></path></svg>';
     case "gear":
@@ -3567,6 +4498,14 @@ function renderIcon(iconName) {
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"></path></svg>';
     case "paperclip":
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>';
+    case "mic":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><path d="M12 18v3"></path><path d="M8 21h8"></path></svg>';
+    case "micOff":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><path d="M12 18v3"></path><path d="M8 21h8"></path><path d="M4 4l16 16"></path></svg>';
+    case "speaker":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"></path><path d="M15.5 8.5a5 5 0 0 1 0 7"></path><path d="M18 6a8.5 8.5 0 0 1 0 12"></path></svg>';
+    case "speakerOff":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4z"></path><path d="M16 9l5 5"></path><path d="M21 9l-5 5"></path></svg>';
     case "retry":
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v6h6"></path><path d="M21 12a9 9 0 0 0-15-6.7L3 9"></path><path d="M21 21v-6h-6"></path><path d="M3 12a9 9 0 0 0 15 6.7L21 15"></path></svg>';
     case "pencil":
@@ -3579,6 +4518,8 @@ function renderIcon(iconName) {
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10"></path><path d="M4 12h10"></path><path d="M4 17h6"></path><path d="M18 9v8"></path><path d="m15 14 3 3 3-3"></path><path d="M5 5l14 14"></path></svg>';
     case "tools":
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>';
+    case "ellipsis":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><circle cx="19" cy="12" r="1.5"></circle></svg>';
     default:
       return "";
   }
@@ -3638,6 +4579,139 @@ async function recoverInterruptedStream() {
     setStatus("Chat refreshed after reconnecting.", "neutral");
   } catch {
   }
+}
+
+async function toggleSpeechInput() {
+  if (state.isDictating) {
+    stopSpeechInput();
+    return;
+  }
+
+  if (!SpeechRecognitionCtor) {
+    setStatus("Speech-to-text is not supported in this browser.", "error");
+    return;
+  }
+
+  try {
+    const recognition = new SpeechRecognitionCtor();
+    const initialText = elements.messageInput.value;
+    recognition.lang = navigator.language || "en-US";
+    recognition.continuous = false;
+    recognition.interimResults = true;
+
+    recognition.onstart = () => {
+      state.isDictating = true;
+      state.speechRecognition = recognition;
+      renderSpeechInputButton();
+      setStatus("Listening...", "busy");
+    };
+
+    recognition.onresult = event => {
+      const transcript = Array.from(event.results)
+        .map(result => result[0]?.transcript || "")
+        .join(" ")
+        .trim();
+      elements.messageInput.value = [initialText.trimEnd(), transcript].filter(Boolean).join(initialText.trim() ? " " : "");
+      autoResizeComposer();
+    };
+
+    recognition.onerror = event => {
+      state.isDictating = false;
+      state.speechRecognition = null;
+      renderSpeechInputButton();
+      setStatus(event.error === "not-allowed" ? "Microphone access was denied." : "Dictation failed.", "error");
+    };
+
+    recognition.onend = () => {
+      const wasDictating = state.isDictating;
+      state.isDictating = false;
+      state.speechRecognition = null;
+      renderSpeechInputButton();
+      if (wasDictating) {
+        setStatus("Dictation complete.", "neutral");
+      }
+    };
+
+    recognition.start();
+  } catch (error) {
+    state.isDictating = false;
+    state.speechRecognition = null;
+    renderSpeechInputButton();
+    setStatus(error.message || "Unable to start dictation.", "error");
+  }
+}
+
+function stopSpeechInput() {
+  try {
+    state.speechRecognition?.stop();
+  } catch {
+  }
+  state.isDictating = false;
+  state.speechRecognition = null;
+  renderSpeechInputButton();
+  setStatus("Dictation stopped.", "neutral");
+}
+
+function toggleMessageSpeech(messageId) {
+  if (!window.speechSynthesis) {
+    setStatus("Text-to-speech is not supported in this browser.", "error");
+    return;
+  }
+
+  if (state.speakingMessageId === messageId) {
+    cancelMessageSpeech();
+    return;
+  }
+
+  const message = (state.currentChat?.messages || []).find(candidate => candidate.id === messageId);
+  const text = getSpeakableMessageText(message);
+  if (!text) {
+    return;
+  }
+
+  cancelMessageSpeech();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = navigator.language || "en-US";
+  utterance.onend = () => {
+    state.speakingMessageId = null;
+    renderMessages();
+  };
+  utterance.onerror = () => {
+    state.speakingMessageId = null;
+    renderMessages();
+    setStatus("Unable to read the message aloud.", "error");
+  };
+
+  state.speakingMessageId = messageId;
+  renderMessages();
+  window.speechSynthesis.speak(utterance);
+  setStatus("Reading response aloud.", "neutral");
+}
+
+function cancelMessageSpeech() {
+  if (window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+  }
+  if (state.speakingMessageId) {
+    state.speakingMessageId = null;
+    renderMessages();
+  }
+}
+
+function getSpeakableMessageText(message) {
+  const content = String(message?.content || "").trim();
+  if (!content) {
+    return "";
+  }
+
+  return content
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[[^\]]*\]\([^\)]+\)/g, " ")
+    .replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1")
+    .replace(/[>#*_~-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function stopStreamWaitPolling() {

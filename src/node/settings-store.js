@@ -24,7 +24,26 @@ function saveSettings(settingsPath, settings, security) {
       Iterations: security.Iterations
     },
     Ui: {
-      ChatFontScale: settings.chatFontScale
+      ChatFontScale: settings.chatFontScale,
+      ChatDefaults: {
+        ModelKey: settings.chatDefaults?.modelKey || "",
+        SystemPrompt: settings.chatDefaults?.systemPrompt || "",
+        Reasoning: settings.chatDefaults?.reasoning || "",
+        ContextLength: settings.chatDefaults?.contextLength ?? null,
+        Temperature: settings.chatDefaults?.temperature ?? null,
+        TopK: settings.chatDefaults?.topK ?? null,
+        TopP: settings.chatDefaults?.topP ?? null,
+        MinP: settings.chatDefaults?.minP ?? null,
+        RepeatPenalty: settings.chatDefaults?.repeatPenalty ?? null
+      },
+      AdaptiveMemory: {
+        Enabled: settings.adaptiveMemory?.enabled === true,
+        MaxWords: settings.adaptiveMemory?.maxWords ?? 500,
+        Summary: settings.adaptiveMemory?.summary || "",
+        LastUpdatedUtc: settings.adaptiveMemory?.lastUpdatedUtc || "",
+        LastReviewedUtc: settings.adaptiveMemory?.lastReviewedUtc || "",
+        SourceCursorUtc: settings.adaptiveMemory?.sourceCursorUtc || ""
+      }
     }
   };
 

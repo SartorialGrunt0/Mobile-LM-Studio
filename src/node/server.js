@@ -39,6 +39,7 @@ function createApp() {
     logger,
     defaultUrl: buildListenAddress(config).defaultUrl,
     repository,
+    adaptiveMemoryTimer: null,
     activeStreamChatIds: new Set(),
     activeStreamAbortControllers: new Map()
   };
@@ -124,6 +125,14 @@ function createApp() {
     response.json(buildSettingsResponse(currentConfig));
   });
 
+  app.get("/api/chat-defaults", (request, response) => {
+    const currentConfig = request.appState.config;
+    response.json({
+      chatDefaults: buildChatDefaultsResponse(currentConfig),
+      adaptiveMemory: buildAdaptiveMemoryResponse(currentConfig)
+    });
+  });
+
   app.post("/api/settings", (request, response) => {
     const payload = normalizeSettingsPayload(request.body);
     const wasAuthenticated = isAuthenticated(request, request.appState.config.Security);
@@ -153,24 +162,14 @@ function createApp() {
       const resolvedApiToken = payload.keepApiToken
         ? (request.appState.config.LmStudio?.ApiToken || "")
         : payload.apiToken;
-      const resolvedPayload = { ...payload, apiToken: resolvedApiToken };
-      saveSettings(request.appState.runtimeSettingsPath, resolvedPayload, security);
-      request.appState.config = {
-        ...request.appState.config,
-        LmStudio: {
-          ...request.appState.config.LmStudio,
-          BaseUrl: payload.baseUrl,
-          ApiToken: resolvedApiToken,
-          McpConfigPath: payload.mcpConfigUpload?.content
-            ? path.join(path.dirname(request.appState.runtimeSettingsPath), "mcp.uploaded.json")
-            : payload.mcpConfigPath
-        },
-        Security: security,
-        Ui: {
-          ...request.appState.config.Ui,
-          ChatFontScale: payload.chatFontScale
-        }
+      const resolvedPayload = {
+        ...payload,
+        apiToken: resolvedApiToken,
+        chatDefaults: buildChatDefaultsResponse(request.appState.config)
       };
+      persistRuntimeSettings(request.appState, resolvedPayload, security);
+      scheduleAdaptiveMemoryRefresh(request.appState, lmStudioClient);
+      void refreshAdaptiveMemoryIfDue(request.appState, lmStudioClient);
       if (hasPin(security) && wasAuthenticated) {
         appendAuthCookie(response, security);
       } else {
@@ -181,6 +180,35 @@ function createApp() {
       request.appState.logger.error(`Failed to save runtime settings to ${request.appState.runtimeSettingsPath}.`, error);
       response.status(500).json({
         detail: "Unable to save settings. Check the service log for details."
+      });
+    }
+  });
+
+  app.post("/api/chat-defaults", (request, response) => {
+    const chatDefaults = normalizeChatDefaultsPayload(request.body?.chatDefaults ?? request.body);
+    const validationErrors = validateChatDefaults(chatDefaults);
+    if (validationErrors) {
+      response.status(400).json({
+        title: "One or more validation errors occurred.",
+        errors: validationErrors
+      });
+      return;
+    }
+
+    try {
+      const payload = {
+        ...buildRuntimeSettingsPayload(request.appState.config),
+        chatDefaults
+      };
+      persistRuntimeSettings(request.appState, payload);
+      response.json({
+        chatDefaults: buildChatDefaultsResponse(request.appState.config),
+        adaptiveMemory: buildAdaptiveMemoryResponse(request.appState.config)
+      });
+    } catch (error) {
+      request.appState.logger.error(`Failed to save chat defaults to ${request.appState.runtimeSettingsPath}.`, error);
+      response.status(500).json({
+        detail: "Unable to save chat defaults. Check the service log for details."
       });
     }
   });
@@ -250,6 +278,37 @@ function createApp() {
     response.json(chat);
   });
 
+  app.post("/api/chats/:chatId/overrides", (request, response) => {
+    const chat = request.appState.repository.getChatRecord(request.params.chatId);
+    if (!chat) {
+      response.sendStatus(404);
+      return;
+    }
+
+    const chatOverrides = normalizeChatOverridePayload(request.body?.chatOverrides ?? request.body);
+    const mcpServerIds = normalizeMcpServerIds(request.body?.mcpServerIds ?? request.body?.selectedMcpServerIds);
+    const validationErrors = validateChatDefaults(chatOverrides);
+    if (validationErrors) {
+      response.status(400).json({
+        title: "One or more validation errors occurred.",
+        errors: validationErrors
+      });
+      return;
+    }
+
+    const saved = request.appState.repository.updateChatOverrides(
+      request.params.chatId,
+      chatOverrides,
+      mcpServerIds
+    );
+    if (!saved) {
+      response.sendStatus(404);
+      return;
+    }
+
+    response.json(request.appState.repository.getChat(request.params.chatId));
+  });
+
   app.get("/api/chats/:chatId/export", (request, response) => {
     const chat = request.appState.repository.getChat(request.params.chatId);
     if (!chat) {
@@ -300,10 +359,12 @@ function createApp() {
         return;
       }
 
-      const title = await lmStudioClient.generateTitle(chat.modelKey, String(request.body?.input || ""));
-      if (title) {
-        request.appState.repository.updateTitle(request.params.chatId, title);
-      }
+      const title = await maybeAutoTitleChat(request, lmStudioClient, {
+        chatId: request.params.chatId,
+        input: String(request.body?.input || ""),
+        modelKey: chat.modelKey,
+        currentTitle: chat.title
+      });
 
       response.json({ title: title || null });
     } catch (error) {
@@ -336,6 +397,10 @@ function createApp() {
       reasoning: hasOverride("reasoning") ? overrideRequest.reasoning : retryContext.reasoning,
       contextLength: hasOverride("contextLength") ? overrideRequest.contextLength : retryContext.contextLength,
       temperature: hasOverride("temperature") ? overrideRequest.temperature : retryContext.temperature,
+      topK: hasOverride("topK") ? overrideRequest.topK : retryContext.topK,
+      topP: hasOverride("topP") ? overrideRequest.topP : retryContext.topP,
+      minP: hasOverride("minP") ? overrideRequest.minP : retryContext.minP,
+      repeatPenalty: hasOverride("repeatPenalty") ? overrideRequest.repeatPenalty : retryContext.repeatPenalty,
       mcpServerIds: hasOverride("mcpServerIds") ? overrideRequest.mcpServerIds : retryContext.mcpServerIds,
       attachments: retryContext.attachments
     };
@@ -405,6 +470,9 @@ function createApp() {
     response.sendFile(path.join(staticRoot, "index.html"));
   });
 
+  scheduleAdaptiveMemoryRefresh(state, lmStudioClient);
+  void refreshAdaptiveMemoryIfDue(state, lmStudioClient);
+
   return { app, config, logger };
 }
 
@@ -414,7 +482,33 @@ function buildSettingsResponse(config) {
     hasApiToken: Boolean(config.LmStudio?.ApiToken),
     mcpConfigPath: config.LmStudio?.McpConfigPath || "",
     chatFontScale: config.Ui?.ChatFontScale || 1,
-    requireLogin: hasPin(config.Security)
+    requireLogin: hasPin(config.Security),
+    adaptiveMemory: buildAdaptiveMemoryResponse(config)
+  };
+}
+
+function buildChatDefaultsResponse(config) {
+  return {
+    modelKey: String(config.Ui?.ChatDefaults?.ModelKey || "").trim(),
+    systemPrompt: String(config.Ui?.ChatDefaults?.SystemPrompt || ""),
+    reasoning: optionalTrimmedString(config.Ui?.ChatDefaults?.Reasoning),
+    contextLength: toOptionalInteger(config.Ui?.ChatDefaults?.ContextLength),
+    temperature: toOptionalFloat(config.Ui?.ChatDefaults?.Temperature),
+    topK: toOptionalInteger(config.Ui?.ChatDefaults?.TopK),
+    topP: toOptionalFloat(config.Ui?.ChatDefaults?.TopP),
+    minP: toOptionalFloat(config.Ui?.ChatDefaults?.MinP),
+    repeatPenalty: toOptionalFloat(config.Ui?.ChatDefaults?.RepeatPenalty)
+  };
+}
+
+function buildAdaptiveMemoryResponse(config) {
+  return {
+    enabled: config.Ui?.AdaptiveMemory?.Enabled === true,
+    maxWords: normalizeAdaptiveMemoryWordLimit(config.Ui?.AdaptiveMemory?.MaxWords),
+    summary: String(config.Ui?.AdaptiveMemory?.Summary || "").trim(),
+    lastUpdatedUtc: String(config.Ui?.AdaptiveMemory?.LastUpdatedUtc || "").trim(),
+    lastReviewedUtc: String(config.Ui?.AdaptiveMemory?.LastReviewedUtc || "").trim(),
+    sourceCursorUtc: String(config.Ui?.AdaptiveMemory?.SourceCursorUtc || "").trim()
   };
 }
 
@@ -432,7 +526,64 @@ function normalizeSettingsPayload(payload) {
       : null,
     chatFontScale: toOptionalFloat(payload?.chatFontScale) || 1,
     requireLogin: Boolean(payload?.requireLogin),
-    pin: String(payload?.pin || "").trim()
+    pin: String(payload?.pin || "").trim(),
+    adaptiveMemory: normalizeAdaptiveMemoryPayload(payload?.adaptiveMemory)
+  };
+}
+
+function normalizeChatDefaultsPayload(payload) {
+  return {
+    modelKey: String(payload?.modelKey || "").trim(),
+    systemPrompt: String(payload?.systemPrompt || ""),
+    reasoning: optionalTrimmedString(payload?.reasoning),
+    contextLength: toOptionalInteger(payload?.contextLength),
+    temperature: toOptionalFloat(payload?.temperature),
+    topK: toOptionalInteger(payload?.topK),
+    topP: toOptionalFloat(payload?.topP),
+    minP: toOptionalFloat(payload?.minP),
+    repeatPenalty: toOptionalFloat(payload?.repeatPenalty)
+  };
+}
+
+function normalizeChatOverridePayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+
+  const overrides = {};
+  if (Object.prototype.hasOwnProperty.call(payload, "systemPrompt")) {
+    overrides.systemPrompt = String(payload.systemPrompt || "");
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, "reasoning")) {
+    overrides.reasoning = optionalTrimmedString(payload.reasoning);
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, "temperature")) {
+    overrides.temperature = toOptionalFloat(payload.temperature);
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, "topK")) {
+    overrides.topK = toOptionalInteger(payload.topK);
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, "topP")) {
+    overrides.topP = toOptionalFloat(payload.topP);
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, "minP")) {
+    overrides.minP = toOptionalFloat(payload.minP);
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, "repeatPenalty")) {
+    overrides.repeatPenalty = toOptionalFloat(payload.repeatPenalty);
+  }
+
+  return Object.keys(overrides).length > 0 ? overrides : null;
+}
+
+function normalizeAdaptiveMemoryPayload(payload) {
+  return {
+    enabled: payload?.enabled === true,
+    maxWords: normalizeAdaptiveMemoryWordLimit(payload?.maxWords),
+    summary: String(payload?.summary || ""),
+    lastUpdatedUtc: String(payload?.lastUpdatedUtc || "").trim(),
+    lastReviewedUtc: String(payload?.lastReviewedUtc || "").trim(),
+    sourceCursorUtc: String(payload?.sourceCursorUtc || "").trim()
   };
 }
 
@@ -441,6 +592,11 @@ function validateSettings(settings) {
     return {
       chatFontScale: ["Chat text size must be between 0.9 and 1.2."]
     };
+  }
+
+  const adaptiveMemoryErrors = validateAdaptiveMemory(settings.adaptiveMemory);
+  if (adaptiveMemoryErrors) {
+    return adaptiveMemoryErrors;
   }
 
   if (settings.mcpConfigUpload?.content) {
@@ -475,6 +631,102 @@ function validateSettings(settings) {
   };
 }
 
+function validateChatDefaults(chatDefaults) {
+  if (chatDefaults.temperature !== null && (chatDefaults.temperature < 0 || chatDefaults.temperature > 1)) {
+    return { temperature: ["Temperature must be between 0 and 1."] };
+  }
+
+  if (chatDefaults.topP !== null && (chatDefaults.topP < 0 || chatDefaults.topP > 1)) {
+    return { topP: ["Top P must be between 0 and 1."] };
+  }
+
+  if (chatDefaults.minP !== null && (chatDefaults.minP < 0 || chatDefaults.minP > 1)) {
+    return { minP: ["Min P must be between 0 and 1."] };
+  }
+
+  if (chatDefaults.topK !== null && chatDefaults.topK < 1) {
+    return { topK: ["Top K must be 1 or greater."] };
+  }
+
+  if (chatDefaults.repeatPenalty !== null && chatDefaults.repeatPenalty <= 0) {
+    return { repeatPenalty: ["Repeat penalty must be greater than 0."] };
+  }
+
+  if (chatDefaults.contextLength !== null && chatDefaults.contextLength < 512) {
+    return { contextLength: ["Context length must be at least 512."] };
+  }
+
+  return null;
+}
+
+function validateAdaptiveMemory(adaptiveMemory) {
+  if (!adaptiveMemory) {
+    return null;
+  }
+
+  if (!Number.isFinite(adaptiveMemory.maxWords) || adaptiveMemory.maxWords < 50 || adaptiveMemory.maxWords > 2000) {
+    return {
+      adaptiveMemory: ["Adaptive memory word limit must be between 50 and 2000."]
+    };
+  }
+
+  return null;
+}
+
+function buildRuntimeSettingsPayload(config) {
+  return {
+    baseUrl: config.LmStudio?.BaseUrl || "",
+    apiToken: config.LmStudio?.ApiToken || "",
+    keepApiToken: Boolean(config.LmStudio?.ApiToken),
+    mcpConfigPath: config.LmStudio?.McpConfigPath || "",
+    mcpConfigUpload: null,
+    chatFontScale: config.Ui?.ChatFontScale || 1,
+    requireLogin: hasPin(config.Security),
+    pin: "",
+    chatDefaults: buildChatDefaultsResponse(config),
+    adaptiveMemory: buildAdaptiveMemoryResponse(config)
+  };
+}
+
+function persistRuntimeSettings(appState, payload, security = appState.config.Security) {
+  saveSettings(appState.runtimeSettingsPath, payload, security);
+  appState.config = {
+    ...appState.config,
+    LmStudio: {
+      ...appState.config.LmStudio,
+      BaseUrl: payload.baseUrl,
+      ApiToken: payload.apiToken,
+      McpConfigPath: payload.mcpConfigUpload?.content
+        ? path.join(path.dirname(appState.runtimeSettingsPath), "mcp.uploaded.json")
+        : payload.mcpConfigPath
+    },
+    Security: security,
+    Ui: {
+      ...appState.config.Ui,
+      ChatFontScale: payload.chatFontScale,
+      ChatDefaults: {
+        ModelKey: payload.chatDefaults?.modelKey || "",
+        SystemPrompt: payload.chatDefaults?.systemPrompt || "",
+        Reasoning: payload.chatDefaults?.reasoning || "",
+        ContextLength: payload.chatDefaults?.contextLength ?? null,
+        Temperature: payload.chatDefaults?.temperature ?? null,
+        TopK: payload.chatDefaults?.topK ?? null,
+        TopP: payload.chatDefaults?.topP ?? null,
+        MinP: payload.chatDefaults?.minP ?? null,
+        RepeatPenalty: payload.chatDefaults?.repeatPenalty ?? null
+      },
+      AdaptiveMemory: {
+        Enabled: payload.adaptiveMemory?.enabled === true,
+        MaxWords: normalizeAdaptiveMemoryWordLimit(payload.adaptiveMemory?.maxWords),
+        Summary: payload.adaptiveMemory?.summary || "",
+        LastUpdatedUtc: payload.adaptiveMemory?.lastUpdatedUtc || "",
+        LastReviewedUtc: payload.adaptiveMemory?.lastReviewedUtc || "",
+        SourceCursorUtc: payload.adaptiveMemory?.sourceCursorUtc || ""
+      }
+    }
+  };
+}
+
 function normalizeModelLoadRequest(payload) {
   return {
     model: String(payload?.model || "").trim(),
@@ -492,9 +744,17 @@ function normalizeChatStreamRequest(payload) {
     reasoning: optionalTrimmedString(payload?.reasoning),
     contextLength: toOptionalInteger(payload?.contextLength),
     temperature: toOptionalFloat(payload?.temperature),
-    mcpServerIds: Array.isArray(payload?.mcpServerIds) ? payload.mcpServerIds.map(value => String(value || "").trim()).filter(Boolean) : [],
+    topK: toOptionalInteger(payload?.topK),
+    topP: toOptionalFloat(payload?.topP),
+    minP: toOptionalFloat(payload?.minP),
+    repeatPenalty: toOptionalFloat(payload?.repeatPenalty),
+    mcpServerIds: normalizeMcpServerIds(payload?.mcpServerIds),
     attachments: Array.isArray(payload?.attachments) ? payload.attachments : []
   };
+}
+
+function normalizeMcpServerIds(value) {
+  return Array.isArray(value) ? value.map(entry => String(entry || "").trim()).filter(Boolean) : [];
 }
 
 async function streamChat(request, response, lmStudioClient, chatRequest, options = {}) {
@@ -552,12 +812,16 @@ async function streamChat(request, response, lmStudioClient, chatRequest, option
     const lmResponse = await lmStudioClient.startChatStream({
       model: chatRequest.model,
       input: buildLmStudioInput(chatRequest),
-      system_prompt: chatRequest.systemPrompt,
+      system_prompt: buildEffectiveSystemPrompt(chatRequest.systemPrompt, buildAdaptiveMemoryResponse(request.appState.config)),
       reasoning: chatRequest.reasoning,
       stream: true,
       store: true,
       context_length: chatRequest.contextLength,
       temperature: chatRequest.temperature,
+      top_k: chatRequest.topK,
+      top_p: chatRequest.topP,
+      min_p: chatRequest.minP,
+      repeat_penalty: chatRequest.repeatPenalty,
       previous_response_id: options.previousResponseId || null,
       integrations: integrations.length > 0 ? integrations : null
     }, streamAbortController?.signal);
@@ -580,6 +844,12 @@ async function streamChat(request, response, lmStudioClient, chatRequest, option
         totalTimeSeconds: Math.max((Date.now() - streamStartedAtMs) / 1000, 0)
       });
       request.appState.repository.saveAssistantMessage(options.persistChatId, chatRequest, assistant);
+      void maybeAutoTitleChat(request, lmStudioClient, {
+        chatId: options.persistChatId,
+        input: chatRequest.input,
+        modelKey: chatRequest.model
+      });
+      void refreshAdaptiveMemoryIfDue(request.appState, lmStudioClient);
     }
 
     if (canWriteToClient()) {
@@ -677,6 +947,177 @@ function buildLmStudioInput(chatRequest) {
     { type: "text", content: prompt },
     ...imageAttachments.map(attachment => ({ type: "image", data_url: attachment.dataUrl }))
   ];
+}
+
+async function maybeAutoTitleChat(request, lmStudioClient, options) {
+  const chatId = String(options?.chatId || "").trim();
+  if (!chatId) {
+    return null;
+  }
+
+  const input = String(options?.input || "").trim();
+  if (!input) {
+    return null;
+  }
+
+  const chat = options?.currentTitle === undefined
+    ? request.appState.repository.getChatRecord(chatId)
+    : { title: options.currentTitle };
+  if (!shouldAutoTitleChat(chat?.title)) {
+    return null;
+  }
+
+  try {
+    const title = await lmStudioClient.generateTitle(options?.modelKey, input);
+    if (!title || !shouldAutoTitleChat(title)) {
+      return null;
+    }
+
+    const latestChat = request.appState.repository.getChatRecord(chatId);
+    if (!shouldAutoTitleChat(latestChat?.title)) {
+      return null;
+    }
+
+    request.appState.repository.updateTitle(chatId, title);
+    return title;
+  } catch (error) {
+    request.appState.logger.warn(`Unable to auto-title chat ${chatId}.`, error);
+    return null;
+  }
+}
+
+function shouldAutoTitleChat(title) {
+  const normalized = String(title || "").trim().toLowerCase();
+  return !normalized || normalized === "new chat";
+}
+
+function buildEffectiveSystemPrompt(systemPrompt, adaptiveMemory) {
+  const basePrompt = String(systemPrompt || "").trim();
+  const memorySummary = adaptiveMemory?.enabled ? String(adaptiveMemory.summary || "").trim() : "";
+  if (!memorySummary) {
+    return basePrompt || null;
+  }
+
+  const memoryBlock = [
+    "Adaptive user memory:",
+    "Use this as compact, soft guidance about the user's preferences and interests. Do not quote it unless directly relevant.",
+    memorySummary
+  ].join("\n");
+
+  return basePrompt ? `${basePrompt}\n\n${memoryBlock}` : memoryBlock;
+}
+
+function normalizeAdaptiveMemoryWordLimit(value) {
+  const parsed = toOptionalInteger(value);
+  if (!parsed) {
+    return 500;
+  }
+
+  return Math.max(50, Math.min(2000, parsed));
+}
+
+function scheduleAdaptiveMemoryRefresh(appState, lmStudioClient) {
+  if (appState.adaptiveMemoryTimer) {
+    clearTimeout(appState.adaptiveMemoryTimer);
+    appState.adaptiveMemoryTimer = null;
+  }
+
+  const adaptiveMemory = buildAdaptiveMemoryResponse(appState.config);
+  if (!adaptiveMemory.enabled) {
+    return;
+  }
+
+  const now = new Date();
+  const nextMidnight = new Date(now);
+  nextMidnight.setHours(24, 0, 0, 0);
+  const delayMs = Math.max(nextMidnight.getTime() - now.getTime(), 60_000);
+
+  appState.adaptiveMemoryTimer = setTimeout(() => {
+    appState.adaptiveMemoryTimer = null;
+    void refreshAdaptiveMemoryIfDue(appState, lmStudioClient)
+      .finally(() => scheduleAdaptiveMemoryRefresh(appState, lmStudioClient));
+  }, delayMs);
+}
+
+async function refreshAdaptiveMemoryIfDue(appState, lmStudioClient, options = {}) {
+  const adaptiveMemory = buildAdaptiveMemoryResponse(appState.config);
+  if (!adaptiveMemory.enabled) {
+    return null;
+  }
+
+  if (!options.allowWithoutDueDate && !isAdaptiveMemoryRefreshDue(adaptiveMemory)) {
+    return null;
+  }
+
+  const messages = appState.repository.listAdaptiveMemoryMessages(adaptiveMemory.sourceCursorUtc || null, 80);
+  if (messages.length === 0) {
+    const payload = {
+      ...buildRuntimeSettingsPayload(appState.config),
+      adaptiveMemory: {
+        ...adaptiveMemory,
+        lastReviewedUtc: new Date().toISOString()
+      }
+    };
+    persistRuntimeSettings(appState, payload);
+    return adaptiveMemory.summary || null;
+  }
+
+  const memoryModel = resolveAdaptiveMemoryModel(appState, messages);
+  if (!memoryModel) {
+    return null;
+  }
+
+  try {
+    const summary = await lmStudioClient.generateAdaptiveMemory(memoryModel, {
+      existingSummary: adaptiveMemory.summary,
+      messages,
+      maxWords: adaptiveMemory.maxWords
+    });
+    const latestMessage = messages[messages.length - 1];
+    const payload = {
+      ...buildRuntimeSettingsPayload(appState.config),
+      adaptiveMemory: {
+        ...adaptiveMemory,
+        summary: summary || adaptiveMemory.summary,
+        lastUpdatedUtc: summary ? new Date().toISOString() : adaptiveMemory.lastUpdatedUtc,
+        lastReviewedUtc: new Date().toISOString(),
+        sourceCursorUtc: latestMessage?.createdAt || adaptiveMemory.sourceCursorUtc
+      }
+    };
+    persistRuntimeSettings(appState, payload);
+    return payload.adaptiveMemory.summary;
+  } catch (error) {
+    appState.logger.warn("Unable to refresh adaptive memory.", error);
+    return null;
+  }
+}
+
+function isAdaptiveMemoryRefreshDue(adaptiveMemory) {
+  const lastReviewed = adaptiveMemory?.lastReviewedUtc ? new Date(adaptiveMemory.lastReviewedUtc) : null;
+  if (!lastReviewed || Number.isNaN(lastReviewed.getTime())) {
+    return true;
+  }
+
+  const now = new Date();
+  return now.getFullYear() !== lastReviewed.getFullYear()
+    || now.getMonth() !== lastReviewed.getMonth()
+    || now.getDate() !== lastReviewed.getDate();
+}
+
+function resolveAdaptiveMemoryModel(appState, messages) {
+  const configuredModel = buildChatDefaultsResponse(appState.config).modelKey;
+  if (configuredModel) {
+    return configuredModel;
+  }
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].modelKey) {
+      return messages[index].modelKey;
+    }
+  }
+
+  const recentChat = appState.repository.listChats()[0];
+  return recentChat?.modelKey || "";
 }
 
 function buildFileAttachmentPromptBlock(attachment) {

@@ -20,6 +20,18 @@ function buildChatExport(chat) {
   if (typeof chat.temperature === "number") {
     lines.push(`- Temperature: ${chat.temperature}`);
   }
+  if (typeof chat.topK === "number") {
+    lines.push(`- Top K: ${chat.topK}`);
+  }
+  if (typeof chat.topP === "number") {
+    lines.push(`- Top P: ${chat.topP}`);
+  }
+  if (typeof chat.minP === "number") {
+    lines.push(`- Min P: ${chat.minP}`);
+  }
+  if (typeof chat.repeatPenalty === "number") {
+    lines.push(`- Repeat Penalty: ${chat.repeatPenalty}`);
+  }
   if (chat.selectedMcpServerIds?.length) {
     lines.push(`- MCP Servers: ${chat.selectedMcpServerIds.join(", ")}`);
   }

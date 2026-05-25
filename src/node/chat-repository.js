@@ -30,7 +30,12 @@ CREATE TABLE IF NOT EXISTS chats (
     reasoning TEXT NULL,
     context_length INTEGER NULL,
     temperature REAL NULL,
+  top_k INTEGER NULL,
+  top_p REAL NULL,
+  min_p REAL NULL,
+  repeat_penalty REAL NULL,
     selected_mcp_json TEXT NOT NULL,
+    chat_overrides_json TEXT NULL,
     last_response_id TEXT NULL,
     created_utc TEXT NOT NULL,
     updated_utc TEXT NOT NULL
@@ -56,6 +61,11 @@ CREATE INDEX IF NOT EXISTS idx_messages_chat_created ON messages(chat_id, create
 `);
 
     ensureColumn(this.db, "chats", "temperature", "REAL NULL");
+    ensureColumn(this.db, "chats", "top_k", "INTEGER NULL");
+    ensureColumn(this.db, "chats", "top_p", "REAL NULL");
+    ensureColumn(this.db, "chats", "min_p", "REAL NULL");
+    ensureColumn(this.db, "chats", "repeat_penalty", "REAL NULL");
+    ensureColumn(this.db, "chats", "chat_overrides_json", "TEXT NULL");
     ensureColumn(this.db, "messages", "attachments_json", "TEXT NOT NULL DEFAULT '[]'");
     ensureColumn(this.db, "messages", "model_key", "TEXT NULL");
   }
@@ -93,7 +103,7 @@ ORDER BY c.updated_utc DESC;
 
   getChat(chatId) {
     const chatRow = this.db.prepare(`
-SELECT id, title, model_key, system_prompt, reasoning, context_length, temperature, selected_mcp_json, last_response_id, created_utc, updated_utc
+SELECT id, title, model_key, system_prompt, reasoning, context_length, temperature, top_k, top_p, min_p, repeat_penalty, selected_mcp_json, chat_overrides_json, last_response_id, created_utc, updated_utc
 FROM chats
 WHERE id = ?
 LIMIT 1;
@@ -111,7 +121,12 @@ LIMIT 1;
       reasoning: chatRow.reasoning,
       contextLength: chatRow.context_length,
       temperature: chatRow.temperature,
+      topK: chatRow.top_k,
+      topP: chatRow.top_p,
+      minP: chatRow.min_p,
+      repeatPenalty: chatRow.repeat_penalty,
       selectedMcpServerIds: parseJsonList(chatRow.selected_mcp_json),
+      chatOverrides: parseJsonObject(chatRow.chat_overrides_json),
       lastResponseId: chatRow.last_response_id,
       createdAt: chatRow.created_utc,
       updatedAt: chatRow.updated_utc,
@@ -121,7 +136,7 @@ LIMIT 1;
 
   getChatRecord(chatId) {
     const chatRow = this.db.prepare(`
-SELECT id, title, model_key, system_prompt, reasoning, context_length, temperature, selected_mcp_json, last_response_id, created_utc, updated_utc
+SELECT id, title, model_key, system_prompt, reasoning, context_length, temperature, top_k, top_p, min_p, repeat_penalty, selected_mcp_json, chat_overrides_json, last_response_id, created_utc, updated_utc
 FROM chats
 WHERE id = ?
 LIMIT 1;
@@ -139,7 +154,12 @@ LIMIT 1;
       reasoning: chatRow.reasoning,
       contextLength: chatRow.context_length,
       temperature: chatRow.temperature,
+      topK: chatRow.top_k,
+      topP: chatRow.top_p,
+      minP: chatRow.min_p,
+      repeatPenalty: chatRow.repeat_penalty,
       selectedMcpServerIds: parseJsonList(chatRow.selected_mcp_json),
+      chatOverrides: parseJsonObject(chatRow.chat_overrides_json),
       lastResponseId: chatRow.last_response_id,
       createdAt: chatRow.created_utc,
       updatedAt: chatRow.updated_utc
@@ -196,10 +216,35 @@ ORDER BY created_utc ASC;
       reasoning: chat.reasoning,
       contextLength: chat.contextLength,
       temperature: chat.temperature,
+      topK: chat.topK,
+      topP: chat.topP,
+      minP: chat.minP,
+      repeatPenalty: chat.repeatPenalty,
       mcpServerIds: chat.selectedMcpServerIds,
       attachments: latestUserAttachments,
       previousResponseId
     };
+  }
+
+  listAdaptiveMemoryMessages(sinceUtc = null, limit = 80) {
+    const rows = this.db.prepare(`
+SELECT m.chat_id, c.title, m.content_markdown, m.model_key, m.created_utc
+FROM messages m
+INNER JOIN chats c ON c.id = m.chat_id
+WHERE m.role = 'user'
+  AND (? IS NULL OR m.created_utc > ?)
+  AND TRIM(COALESCE(m.content_markdown, '')) <> ''
+ORDER BY m.created_utc ASC, m.rowid ASC
+LIMIT ?;
+`).all(sinceUtc, sinceUtc, Math.max(1, limit));
+
+    return rows.map(row => ({
+      chatId: row.chat_id,
+      chatTitle: row.title,
+      content: row.content_markdown,
+      modelKey: row.model_key,
+      createdAt: row.created_utc
+    }));
   }
 
   deleteLastAssistantMessage(chatId) {
@@ -218,6 +263,22 @@ LIMIT 1;
     this.db.prepare("UPDATE chats SET title = ?, updated_utc = ? WHERE id = ?;").run(title, nowIso(), chatId);
   }
 
+  updateChatOverrides(chatId, chatOverrides, selectedMcpServerIds) {
+    const payload = chatOverrides && typeof chatOverrides === "object"
+      ? JSON.stringify(chatOverrides)
+      : null;
+    const selectedMcpJson = JSON.stringify(Array.isArray(selectedMcpServerIds) ? selectedMcpServerIds : []);
+    const result = this.db.prepare(`
+UPDATE chats
+SET selected_mcp_json = ?,
+    chat_overrides_json = ?,
+    updated_utc = ?
+WHERE id = ?;
+`).run(selectedMcpJson, payload, nowIso(), chatId);
+
+    return result.changes > 0;
+  }
+
   createChat(request) {
     const chatId = `chat_${randomId()}`;
     const timestamp = nowIso();
@@ -225,8 +286,8 @@ LIMIT 1;
     const selectedMcpJson = JSON.stringify(request.mcpServerIds || []);
 
     this.db.prepare(`
-INSERT INTO chats (id, title, model_key, system_prompt, reasoning, context_length, temperature, selected_mcp_json, last_response_id, created_utc, updated_utc)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?);
+INSERT INTO chats (id, title, model_key, system_prompt, reasoning, context_length, temperature, top_k, top_p, min_p, repeat_penalty, selected_mcp_json, chat_overrides_json, last_response_id, created_utc, updated_utc)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?);
 `).run(
       chatId,
       title,
@@ -235,6 +296,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?);
       dbValue(request.reasoning),
       dbValue(request.contextLength),
       dbValue(request.temperature),
+      dbValue(request.topK),
+      dbValue(request.topP),
+      dbValue(request.minP),
+      dbValue(request.repeatPenalty),
       selectedMcpJson,
       timestamp,
       timestamp
@@ -248,6 +313,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?);
       reasoning: request.reasoning || null,
       contextLength: request.contextLength ?? null,
       temperature: request.temperature ?? null,
+      topK: request.topK ?? null,
+      topP: request.topP ?? null,
+      minP: request.minP ?? null,
+      repeatPenalty: request.repeatPenalty ?? null,
       selectedMcpServerIds: request.mcpServerIds || [],
       lastResponseId: null,
       createdAt: timestamp,
@@ -265,6 +334,10 @@ SET model_key = ?,
     reasoning = ?,
     context_length = ?,
     temperature = ?,
+    top_k = ?,
+    top_p = ?,
+    min_p = ?,
+    repeat_penalty = ?,
     selected_mcp_json = ?,
     updated_utc = ?
 WHERE id = ?;
@@ -274,6 +347,10 @@ WHERE id = ?;
         dbValue(request.reasoning),
         dbValue(request.contextLength),
         dbValue(request.temperature),
+        dbValue(request.topK),
+        dbValue(request.topP),
+        dbValue(request.minP),
+        dbValue(request.repeatPenalty),
         JSON.stringify(request.mcpServerIds || []),
         timestamp,
         chatId
@@ -305,6 +382,10 @@ SET model_key = ?,
     reasoning = ?,
     context_length = ?,
     temperature = ?,
+  top_k = ?,
+  top_p = ?,
+  min_p = ?,
+  repeat_penalty = ?,
     selected_mcp_json = ?,
     last_response_id = ?,
     updated_utc = ?
@@ -315,6 +396,10 @@ WHERE id = ?;
         dbValue(request.reasoning),
         dbValue(request.contextLength),
         dbValue(request.temperature),
+    dbValue(request.topK),
+    dbValue(request.topP),
+    dbValue(request.minP),
+    dbValue(request.repeatPenalty),
         JSON.stringify(request.mcpServerIds || []),
         dbValue(assistant.responseId),
         timestamp,
@@ -449,8 +534,13 @@ function parseJsonList(json) {
 }
 
 function parseJsonObject(json) {
+  if (!json) {
+    return null;
+  }
+
   try {
-    return JSON.parse(json);
+    const parsed = JSON.parse(json);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }

@@ -44,7 +44,26 @@ function getDefaultConfig() {
       Iterations: 600000
     },
     Ui: {
-      ChatFontScale: 1
+      ChatFontScale: 1,
+      ChatDefaults: {
+        ModelKey: "",
+        SystemPrompt: "",
+        Reasoning: "",
+        ContextLength: null,
+        Temperature: null,
+        TopK: null,
+        TopP: null,
+        MinP: null,
+        RepeatPenalty: null
+      },
+      AdaptiveMemory: {
+        Enabled: false,
+        MaxWords: 500,
+        Summary: "",
+        LastUpdatedUtc: "",
+        LastReviewedUtc: "",
+        SourceCursorUtc: ""
+      }
     },
     Storage: {
       ConnectionString: "Data Source=%PROGRAMDATA%\\MobileLmStudio\\mobile-lm-studio.db"
