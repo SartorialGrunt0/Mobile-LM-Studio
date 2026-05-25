@@ -51,8 +51,8 @@
             <p class="top-actions-section-note">Includes the adaptive memory prompt.</p>
             <div class="top-actions-grid">
               <button id="model-button" class="ghost-button icon-button" type="button" title="Model controls" aria-label="Model controls"></button>
-              <button id="settings-button" class="ghost-button icon-button" type="button" title="Settings" aria-label="Settings"></button>
               <button id="top-tools-button" class="ghost-button icon-button" type="button" title="Tools" aria-label="Tools"></button>
+              <button id="settings-button" class="ghost-button icon-button" type="button" title="Settings" aria-label="Settings"></button>
             </div>
           </section>
           <div class="top-actions-divider" role="separator" aria-hidden="true"></div>
@@ -95,11 +95,11 @@
           <div id="composer-attachments" class="composer-attachments" hidden></div>
           <div id="composer-context-meter" class="context-meter composer-context-meter" hidden></div>
           <div class="composer-toolbar">
-            <button id="chat-tools-button" class="ghost-button plain-icon-button attach-button icon-button" type="button" title="MCP tools" aria-label="MCP tools"></button>
+            <button id="chat-tools-button" class="ghost-button attach-button icon-button" type="button" title="MCP tools" aria-label="MCP tools"></button>
             <input id="file-input" type="file" multiple hidden />
           </div>
           <div class="composer-field">
-            <textarea id="message-input" rows="1" placeholder="Send a message" aria-label="Message" autocorrect="off" autocapitalize="sentences" spellcheck="false"></textarea>
+            <textarea id="message-input" rows="1" placeholder="Send a message" aria-label="Message" autocorrect="on" autocapitalize="sentences" spellcheck="true"></textarea>
             <div class="composer-inline-actions">
               <button id="attach-button" class="ghost-button plain-icon-button attach-button icon-button" type="button" title="Add attachment" aria-label="Add attachment"></button>
               <button id="speech-input-button" class="ghost-button plain-icon-button attach-button icon-button" type="button" title="Start dictation" aria-label="Start dictation"></button>
@@ -267,7 +267,7 @@
 
             <label class="field">
               <span>Temperature</span>
-              <input id="temperature-input" type="number" min="0" max="1" step="0.05" placeholder="Default" />
+              <input id="temperature-input" type="number" min="0" max="1" step="any" inputmode="decimal" placeholder="Default" />
             </label>
 
             <label class="field">
@@ -277,23 +277,18 @@
 
             <label class="field">
               <span>Top P</span>
-              <input id="top-p-input" type="number" min="0" max="1" step="0.01" placeholder="Default" />
+              <input id="top-p-input" type="number" min="0" max="1" step="any" inputmode="decimal" placeholder="Default" />
             </label>
 
             <label class="field">
               <span>Min P</span>
-              <input id="min-p-input" type="number" min="0" max="1" step="0.01" placeholder="Default" />
+              <input id="min-p-input" type="number" min="0" max="1" step="any" inputmode="decimal" placeholder="Default" />
             </label>
 
             <label class="field">
               <span>Repeat Penalty</span>
-              <input id="repeat-penalty-input" type="number" min="0.1" step="0.05" placeholder="Default" />
+              <input id="repeat-penalty-input" type="number" min="0.1" step="any" inputmode="decimal" placeholder="Default" />
             </label>
-          </div>
-
-          <div id="model-tools-section" class="mcp-section">
-            <p class="subhead">MCP Servers <small class="field-hint">— default for new chats</small></p>
-            <div id="mcp-list" class="chip-list"></div>
           </div>
         </details>
       </section>
@@ -347,7 +342,7 @@
 
             <label class="field">
               <span>Temperature</span>
-              <input id="chat-override-temperature-input" type="number" min="0" max="1" step="0.05" placeholder="Default" />
+              <input id="chat-override-temperature-input" type="number" min="0" max="1" step="any" inputmode="decimal" placeholder="Default" />
             </label>
 
             <label class="field">
@@ -357,23 +352,18 @@
 
             <label class="field">
               <span>Top P</span>
-              <input id="chat-override-top-p-input" type="number" min="0" max="1" step="0.01" placeholder="Default" />
+              <input id="chat-override-top-p-input" type="number" min="0" max="1" step="any" inputmode="decimal" placeholder="Default" />
             </label>
 
             <label class="field">
               <span>Min P</span>
-              <input id="chat-override-min-p-input" type="number" min="0" max="1" step="0.01" placeholder="Default" />
+              <input id="chat-override-min-p-input" type="number" min="0" max="1" step="any" inputmode="decimal" placeholder="Default" />
             </label>
 
             <label class="field">
               <span>Repeat Penalty</span>
-              <input id="chat-override-repeat-penalty-input" type="number" min="0.1" step="0.05" placeholder="Default" />
+              <input id="chat-override-repeat-penalty-input" type="number" min="0.1" step="any" inputmode="decimal" placeholder="Default" />
             </label>
-          </div>
-
-          <div class="mcp-section">
-            <p class="subhead">MCP Servers <small class="field-hint">— overrides this chat</small></p>
-            <div id="chat-override-mcp-list" class="chip-list"></div>
           </div>
         </details>
       </section>

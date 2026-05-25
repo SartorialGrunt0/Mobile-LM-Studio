@@ -354,7 +354,7 @@ function bindEvents() {
     }
   });
 
-  elements.mcpList.addEventListener("click", event => {
+  elements.mcpList?.addEventListener("click", event => {
     const button = event.target.closest("button[data-mcp-id]");
     if (!button) {
       return;
@@ -1424,6 +1424,10 @@ function renderModelDetails() {
 }
 
 function renderMcpServers() {
+  if (!elements.mcpList) {
+    return;
+  }
+
   const mcpSection = elements.mcpList?.closest(".mcp-section");
   if (mcpSection) {
     mcpSection.hidden = !state.bootstrap?.mcpConfigured;
@@ -2914,6 +2918,10 @@ function renderChatOverrideMenu() {
     state.chatOverrideDraft.reasoning,
     "default"
   );
+
+  if (!elements.chatOverrideMcpList) {
+    return;
+  }
 
   const mcpSection = elements.chatOverrideMcpList?.closest(".mcp-section");
   if (mcpSection) {
