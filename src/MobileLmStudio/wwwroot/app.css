@@ -493,6 +493,12 @@ body.drawer-open .drawer-backdrop {
   height: 45px;
 }
 
+.field-action-row > .primary-button,
+.field-action-row > .secondary-button,
+.field-action-row > .ghost-button:not(.icon-button) {
+  white-space: nowrap;
+}
+
 .field textarea,
 .composer-field textarea {
   resize: vertical;
@@ -1821,6 +1827,10 @@ body.drawer-open .drawer-backdrop {
   padding: 0.5rem 0.75rem;
   border-radius: var(--radius-sm);
   text-align: center;
+}
+
+.settings-status.inline-status {
+  text-align: left;
 }
 
 .settings-status.success {

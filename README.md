@@ -24,6 +24,7 @@ This repository now tracks the Node.js runtime, the static client, and Docker an
 - `Dockerfile`: container image definition
 - `docker-compose.yml`: ready-to-run Compose configuration
 - `docker-compose.example.yml`: commented Compose example template
+- `docker-compose.cuda.yml`: optional NVIDIA CUDA override for Kokoro TTS
 - `scripts/dev-server.ps1`: local development entry point
 - `reference/lm_studio_rest_api`: LM Studio API reference used to build the integration
 
@@ -78,6 +79,17 @@ You can run that file directly:
 docker compose -f docker-compose.example.yml up -d
 ```
 
+### NVIDIA CUDA for Kokoro TTS
+
+If the Docker host is Linux x64 with the NVIDIA Container Toolkit installed, you can enable CUDA for Kokoro with the tracked override file:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.cuda.yml up -d --build
+```
+
+That override installs the ONNX Runtime CUDA binaries during the image build and starts the container with `KOKORO_DEVICE=cuda` plus `gpus: all`.
+If CUDA is not available at runtime, the app falls back to CPU automatically and reports the fallback in the TTS status endpoint.
+
 ### Configuration via environment variables
 
 All settings can be passed as environment variables in `docker-compose.yml`, `docker-compose.example.yml`, or with `-e` on the command line:
@@ -87,6 +99,8 @@ All settings can be passed as environment variables in `docker-compose.yml`, `do
 | `LMSTUDIO_URL` | LM Studio server URL | `http://127.0.0.1:1234` |
 | `LMSTUDIO_API_TOKEN` | Bearer token for LM Studio requests | _(empty)_ |
 | `LMSTUDIO_MCP_CONFIG_PATH` | Path to `mcp.json` inside the container | _(empty)_ |
+| `KOKORO_DEVICE` | Kokoro runtime device such as `cpu` or `cuda` | `cpu` |
+| `KOKORO_DTYPE` | Kokoro model dtype such as `q8`, `fp16`, or `fp32` | `q8` |
 | `WEB_PORT` | Port the server listens on | `5080` |
 | `DATA_DIR` | Directory for the SQLite database, runtime settings, and logs | `/data` |
 
@@ -95,6 +109,8 @@ Example overriding the LM Studio host at launch time:
 ```sh
 LMSTUDIO_URL=http://192.168.1.10:1234 docker compose up -d
 ```
+
+For native Windows runs outside Docker, `KOKORO_DEVICE=dml` is the relevant hardware-acceleration path.
 
 ### Mounting an MCP config
 

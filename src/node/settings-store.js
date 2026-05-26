@@ -43,6 +43,10 @@ function saveSettings(settingsPath, settings, security) {
         LastUpdatedUtc: settings.adaptiveMemory?.lastUpdatedUtc || "",
         LastReviewedUtc: settings.adaptiveMemory?.lastReviewedUtc || "",
         SourceCursorUtc: settings.adaptiveMemory?.sourceCursorUtc || ""
+      },
+      Tts: {
+        Provider: settings.tts?.provider || "browser",
+        Voice: settings.tts?.voice || "af_heart"
       }
     }
   };

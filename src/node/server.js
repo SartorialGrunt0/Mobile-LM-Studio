@@ -11,6 +11,7 @@ const { LmStudioClient } = require("./lm-studio-client");
 const { getServers } = require("./mcp-catalog");
 const { buildAssistantPersistence, relayLmStudioStream, writeSse } = require("./lm-studio-stream");
 const { saveSettings } = require("./settings-store");
+const { DEFAULT_TTS_VOICE, SUPPORTED_TTS_PROVIDERS, TtsService, normalizeTtsProvider, normalizeTtsVoice } = require("./tts-service");
 
 function buildListenAddress(config) {
   const configuredUrl = config.Web?.Urls?.[0] || "http://0.0.0.0:5080";
@@ -27,11 +28,18 @@ function createApp() {
   const logger = createLogger(logDirectory);
   const staticRoot = path.join(__dirname, "..", "MobileLmStudio", "wwwroot");
   const katexRoot = path.join(__dirname, "..", "..", "node_modules", "katex", "dist");
+  const ttsCacheDir = path.join(path.dirname(runtimeSettingsPath), "tts-cache", "kokoro");
   const repository = new ChatRepository(config.Storage.ConnectionString);
   const lmStudioClient = new LmStudioClient(() => ({
     baseUrl: state.config.LmStudio?.BaseUrl,
     apiToken: state.config.LmStudio?.ApiToken
   }));
+  const ttsService = new TtsService({
+    logger,
+    cacheDir: ttsCacheDir,
+    device: config.Ui?.Tts?.Device,
+    dtype: config.Ui?.Tts?.Dtype
+  });
   const app = express();
   const state = {
     config,
@@ -39,6 +47,7 @@ function createApp() {
     logger,
     defaultUrl: buildListenAddress(config).defaultUrl,
     repository,
+    ttsService,
     adaptiveMemoryTimer: null,
     activeStreamChatIds: new Set(),
     activeStreamAbortControllers: new Map()
@@ -123,6 +132,61 @@ function createApp() {
   app.get("/api/settings", (request, response) => {
     const currentConfig = request.appState.config;
     response.json(buildSettingsResponse(currentConfig));
+  });
+
+  app.get("/api/tts/status", (request, response) => {
+    response.json(request.appState.ttsService.getStatus());
+  });
+
+  app.post("/api/tts/install", async (request, response) => {
+    try {
+      response.json(await request.appState.ttsService.install());
+    } catch (error) {
+      request.appState.logger.error("Failed to install the Kokoro TTS runtime.", error);
+      response.status(500).json({
+        detail: error.message
+      });
+    }
+  });
+
+  app.get("/api/tts/voices", async (request, response) => {
+    try {
+      response.json({
+        voices: await request.appState.ttsService.listVoices()
+      });
+    } catch (error) {
+      request.appState.logger.error("Failed to enumerate Kokoro voices.", error);
+      response.status(500).json({
+        detail: error.message
+      });
+    }
+  });
+
+  app.post("/api/tts/speak", async (request, response) => {
+    const payload = normalizeTtsSpeakRequest(request.body);
+    const validationErrors = validateTtsSpeakRequest(payload);
+    if (validationErrors) {
+      response.status(400).json({
+        title: "One or more validation errors occurred.",
+        errors: validationErrors
+      });
+      return;
+    }
+
+    try {
+      const voice = payload.voice || request.appState.config.Ui?.Tts?.Voice || DEFAULT_TTS_VOICE;
+      const audio = await request.appState.ttsService.synthesize(payload.text, { voice });
+      const wav = Buffer.from(audio.toWav());
+      response.setHeader("Content-Type", "audio/wav");
+      response.setHeader("Cache-Control", "no-store");
+      response.setHeader("Content-Length", String(wav.byteLength));
+      response.end(wav);
+    } catch (error) {
+      request.appState.logger.error("Failed to synthesize Kokoro speech.", error);
+      response.status(500).json({
+        detail: error.message
+      });
+    }
   });
 
   app.get("/api/chat-defaults", (request, response) => {
@@ -505,7 +569,8 @@ function buildSettingsResponse(config) {
     mcpConfigPath: config.LmStudio?.McpConfigPath || "",
     chatFontScale: config.Ui?.ChatFontScale || 1,
     requireLogin: hasPin(config.Security),
-    adaptiveMemory: buildAdaptiveMemoryResponse(config)
+    adaptiveMemory: buildAdaptiveMemoryResponse(config),
+    tts: buildTtsSettingsResponse(config)
   };
 }
 
@@ -534,6 +599,13 @@ function buildAdaptiveMemoryResponse(config) {
   };
 }
 
+function buildTtsSettingsResponse(config) {
+  return {
+    provider: normalizeTtsProvider(config.Ui?.Tts?.Provider),
+    voice: normalizeTtsVoice(config.Ui?.Tts?.Voice)
+  };
+}
+
 function normalizeSettingsPayload(payload) {
   return {
     baseUrl: String(payload?.baseUrl || "").trim(),
@@ -549,7 +621,15 @@ function normalizeSettingsPayload(payload) {
     chatFontScale: toOptionalFloat(payload?.chatFontScale) || 1,
     requireLogin: Boolean(payload?.requireLogin),
     pin: String(payload?.pin || "").trim(),
-    adaptiveMemory: normalizeAdaptiveMemoryPayload(payload?.adaptiveMemory)
+    adaptiveMemory: normalizeAdaptiveMemoryPayload(payload?.adaptiveMemory),
+    tts: normalizeTtsSettingsPayload(payload?.tts)
+  };
+}
+
+function normalizeTtsSettingsPayload(payload) {
+  return {
+    provider: normalizeTtsProvider(payload?.provider),
+    voice: normalizeTtsVoice(payload?.voice)
   };
 }
 
@@ -609,6 +689,13 @@ function normalizeAdaptiveMemoryPayload(payload) {
   };
 }
 
+function normalizeTtsSpeakRequest(payload) {
+  return {
+    text: String(payload?.text || ""),
+    voice: payload?.voice ? normalizeTtsVoice(payload.voice) : ""
+  };
+}
+
 function validateSettings(settings) {
   if (!Number.isFinite(settings.chatFontScale) || settings.chatFontScale < 0.9 || settings.chatFontScale > 1.2) {
     return {
@@ -619,6 +706,11 @@ function validateSettings(settings) {
   const adaptiveMemoryErrors = validateAdaptiveMemory(settings.adaptiveMemory);
   if (adaptiveMemoryErrors) {
     return adaptiveMemoryErrors;
+  }
+
+  const ttsErrors = validateTtsSettings(settings.tts);
+  if (ttsErrors) {
+    return ttsErrors;
   }
 
   if (settings.mcpConfigUpload?.content) {
@@ -695,6 +787,43 @@ function validateAdaptiveMemory(adaptiveMemory) {
   return null;
 }
 
+function validateTtsSettings(tts) {
+  if (!tts) {
+    return null;
+  }
+
+  if (!SUPPORTED_TTS_PROVIDERS.includes(tts.provider)) {
+    return {
+      tts: ["Text-to-speech provider is not supported."]
+    };
+  }
+
+  if (tts.provider === "kokoro" && !String(tts.voice || "").trim()) {
+    return {
+      tts: ["Choose a Kokoro voice before saving."]
+    };
+  }
+
+  return null;
+}
+
+function validateTtsSpeakRequest(payload) {
+  const text = String(payload?.text || "").trim();
+  if (!text) {
+    return {
+      text: ["Text is required."]
+    };
+  }
+
+  if (text.length > 12000) {
+    return {
+      text: ["Text-to-speech input must be 12000 characters or less."]
+    };
+  }
+
+  return null;
+}
+
 function buildRuntimeSettingsPayload(config) {
   return {
     baseUrl: config.LmStudio?.BaseUrl || "",
@@ -706,7 +835,8 @@ function buildRuntimeSettingsPayload(config) {
     requireLogin: hasPin(config.Security),
     pin: "",
     chatDefaults: buildChatDefaultsResponse(config),
-    adaptiveMemory: buildAdaptiveMemoryResponse(config)
+    adaptiveMemory: buildAdaptiveMemoryResponse(config),
+    tts: buildTtsSettingsResponse(config)
   };
 }
 
@@ -744,6 +874,11 @@ function persistRuntimeSettings(appState, payload, security = appState.config.Se
         LastUpdatedUtc: payload.adaptiveMemory?.lastUpdatedUtc || "",
         LastReviewedUtc: payload.adaptiveMemory?.lastReviewedUtc || "",
         SourceCursorUtc: payload.adaptiveMemory?.sourceCursorUtc || ""
+      },
+      Tts: {
+        ...appState.config.Ui?.Tts,
+        Provider: payload.tts?.provider || "browser",
+        Voice: payload.tts?.voice || DEFAULT_TTS_VOICE
       }
     }
   };

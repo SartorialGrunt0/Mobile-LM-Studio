@@ -63,6 +63,12 @@ function getDefaultConfig() {
         LastUpdatedUtc: "",
         LastReviewedUtc: "",
         SourceCursorUtc: ""
+      },
+      Tts: {
+        Provider: "browser",
+        Voice: "af_heart",
+        Device: "cpu",
+        Dtype: "q8"
       }
     },
     Storage: {
@@ -187,6 +193,18 @@ function applyEnvOverrides(config) {
   if (process.env.WEB_PORT) {
     next.Web = next.Web || {};
     next.Web.Urls = [`http://0.0.0.0:${process.env.WEB_PORT}`];
+  }
+
+  if (process.env.KOKORO_DEVICE) {
+    next.Ui = next.Ui || {};
+    next.Ui.Tts = next.Ui.Tts || {};
+    next.Ui.Tts.Device = process.env.KOKORO_DEVICE;
+  }
+
+  if (process.env.KOKORO_DTYPE) {
+    next.Ui = next.Ui || {};
+    next.Ui.Tts = next.Ui.Tts || {};
+    next.Ui.Tts.Dtype = process.env.KOKORO_DTYPE;
   }
 
   return next;

@@ -12,7 +12,7 @@
   <title>Mobile LM Studio</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20260637" />
   <link rel="stylesheet" href="/vendor/katex/katex.min.css?v=20260635" />
-  <link rel="stylesheet" href="app.css?v=20260637" />
+  <link rel="stylesheet" href="app.css?v=20260639" />
 </head>
 <body>
   <div class="page-shell">
@@ -205,6 +205,23 @@
 
       <details class="settings-section" open>
         <summary class="settings-section-title">Features</summary>
+        <label class="field">
+          <span>Text to Speech</span>
+          <div class="field-action-row">
+            <select id="settings-tts-provider">
+              <option value="browser">Browser</option>
+              <option value="kokoro">Kokoro</option>
+            </select>
+            <button id="settings-tts-install-button" class="secondary-button" type="button">Install</button>
+          </div>
+          <small class="field-hint">Browser uses the current device voice list. Kokoro runs on the server and downloads its model into the app data directory.</small>
+        </label>
+        <label class="field" hidden>
+          <span>Kokoro Voice</span>
+          <select id="settings-tts-voice"></select>
+          <small class="field-hint">Available after the Kokoro model has been installed or loaded.</small>
+        </label>
+        <p id="settings-tts-status" class="settings-status inline-status" hidden></p>
         <label class="toggle-field toggle-field-with-action" for="settings-adaptive-memory-enabled">
           <input id="settings-adaptive-memory-enabled" type="checkbox" />
           <div>
@@ -404,6 +421,6 @@
 
   <script defer src="/vendor/katex/katex.min.js?v=20260628"></script>
   <script defer src="/vendor/katex/contrib/auto-render.min.js?v=20260628"></script>
-  <script src="app.js?v=20260637" type="module"></script>
+  <script src="app.js?v=20260639" type="module"></script>
 </body>
 </html>

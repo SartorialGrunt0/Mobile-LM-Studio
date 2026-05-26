@@ -8,6 +8,8 @@ services:
       LMSTUDIO_URL: http://host.docker.internal:1234
       # LMSTUDIO_API_TOKEN: your-token-here
       # LMSTUDIO_MCP_CONFIG_PATH: /data/mcp.json
+      # KOKORO_DEVICE: cpu
+      # KOKORO_DTYPE: q8
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

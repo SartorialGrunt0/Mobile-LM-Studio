@@ -1,0 +1,10 @@
+services:
+  mobile-lm-studio:
+    build:
+      args:
+        ONNXRUNTIME_NODE_INSTALL_CUDA: v12
+    environment:
+      KOKORO_DEVICE: cuda
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    gpus: all
