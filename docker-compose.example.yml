@@ -1,0 +1,19 @@
+services:
+  mobile-lm-studio:
+    build:
+      context: .
+    ports:
+      - "5080:5080"
+    environment:
+      LMSTUDIO_URL: http://host.docker.internal:1234
+      # LMSTUDIO_API_TOKEN: your-token-here
+      # LMSTUDIO_MCP_CONFIG_PATH: /data/mcp.json
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - mobile-lm-studio-data:/data
+      # - ./mcp.json:/data/mcp.json:ro
+    restart: unless-stopped
+
+volumes:
+  mobile-lm-studio-data:

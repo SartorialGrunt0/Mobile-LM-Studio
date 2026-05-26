@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Mobile LM Studio">
+  <defs>
+    <linearGradient id="bubble-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1e94ad"/>
+      <stop offset="1" stop-color="#0d5465"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="56" height="56" rx="16" fill="url(#bubble-bg)"/>
+  <!-- Chat bubble: body x=10–54, y=10–44, r=8; tail tip at (12,54) lands exactly at corner start (18,44) — no extra h step, no bump -->
+  <path d="M18 10H46c4.418 0 8 3.582 8 8V36c0 4.418-3.582 8-8 8H24L12 54L18 44c-4.418 0-8-3.582-8-8V18c0-4.418 3.582-8 8-8Z" fill="#f8fffe"/>
+  <circle cx="24" cy="27" r="2.5" fill="#176b7f"/>
+  <circle cx="32" cy="27" r="2.5" fill="#176b7f"/>
+  <circle cx="40" cy="27" r="2.5" fill="#176b7f"/>
+</svg>

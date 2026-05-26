@@ -5,11 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#f4efe4" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#10161d" media="(prefers-color-scheme: dark)" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="LM Studio" />
   <title>Mobile LM Studio</title>
-  <link rel="stylesheet" href="app.css?v=20260521" />
+  <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20260637" />
+  <link rel="stylesheet" href="/vendor/katex/katex.min.css?v=20260635" />
+  <link rel="stylesheet" href="app.css?v=20260637" />
 </head>
 <body>
   <div class="page-shell">
@@ -29,23 +32,42 @@
 
     <div class="workspace-shell">
       <header class="top-bar">
-        <div class="top-bar-left">
-          <button id="drawer-toggle" class="ghost-button icon-button mobile-only" type="button" title="Chats" aria-label="Chats"></button>
-          <div class="top-bar-title-block">
-            <p class="eyebrow">Chat</p>
-            <h2 id="current-chat-title" class="top-title">New Chat</h2>
+        <div class="top-bar-main">
+          <div class="top-bar-left">
+            <button id="drawer-toggle" class="ghost-button icon-button mobile-only" type="button" title="Chats" aria-label="Chats"></button>
+            <div class="top-bar-title-block">
+              <p class="eyebrow">Chat</p>
+              <h2 id="current-chat-title" class="top-title">New Chat</h2>
+            </div>
+          </div>
+          <div class="top-bar-meta">
+            <span id="connection-pill" class="connection-pill">Offline</span>
+            <button id="top-actions-toggle" class="ghost-button icon-button mobile-only top-actions-toggle" type="button" title="Show top actions" aria-label="Show top actions" aria-controls="top-bar-actions" aria-expanded="false"></button>
           </div>
         </div>
-        <div class="top-bar-right">
-          <span id="connection-pill" class="connection-pill">Offline</span>
-          <div class="top-bar-actions">
-            <button id="model-button" class="ghost-button icon-button" type="button" title="Model controls" aria-label="Model controls"></button>
-            <button id="export-chat-button" class="ghost-button icon-button" type="button" title="Export chat" aria-label="Export chat"></button>
-            <button id="delete-chat-button" class="ghost-button icon-button" type="button" title="Delete chat" aria-label="Delete chat"></button>
-            <button id="theme-button" class="ghost-button icon-button" type="button" title="Toggle dark mode" aria-label="Toggle dark mode"></button>
-            <button id="settings-button" class="ghost-button icon-button" type="button" title="Settings" aria-label="Settings"></button>
-            <button id="logout-button" class="ghost-button icon-button" type="button" title="Lock" aria-label="Lock"></button>
-          </div>
+        <section id="status-bar" class="status-bar">Ready</section>
+        <div id="top-bar-actions" class="top-bar-actions">
+          <section class="top-actions-section top-actions-system">
+            <p class="top-actions-section-title">System Settings</p>
+            <p class="top-actions-section-note">Includes the adaptive memory prompt.</p>
+            <div class="top-actions-grid">
+              <button id="model-button" class="ghost-button icon-button" type="button" title="Model controls" aria-label="Model controls"></button>
+              <button id="top-tools-button" class="ghost-button icon-button" type="button" title="Tools" aria-label="Tools"></button>
+              <button id="settings-button" class="ghost-button icon-button" type="button" title="Settings" aria-label="Settings"></button>
+            </div>
+          </section>
+          <div class="top-actions-divider" role="separator" aria-hidden="true"></div>
+          <section class="top-actions-section top-actions-chat">
+            <p class="top-actions-section-title">Chat Actions</p>
+            <div class="top-actions-grid">
+              <button id="export-chat-button" class="ghost-button icon-button" type="button" title="Export chat" aria-label="Export chat"></button>
+              <button id="delete-chat-button" class="ghost-button icon-button" type="button" title="Delete chat" aria-label="Delete chat"></button>
+              <button id="chat-override-button" class="ghost-button icon-button" type="button" title="Chat override settings" aria-label="Chat override settings"></button>
+            </div>
+          </section>
+          <button id="theme-button" class="ghost-button icon-button" type="button" title="Toggle dark mode" aria-label="Toggle dark mode" hidden></button>
+          <button id="auto-scroll-button" class="ghost-button icon-button" type="button" title="Disable auto-scroll" aria-label="Disable auto-scroll" aria-pressed="true" hidden></button>
+          <button id="logout-button" class="ghost-button icon-button" type="button" title="Lock" aria-label="Lock" hidden></button>
         </div>
       </header>
 
@@ -53,8 +75,6 @@
         <p id="config-banner-text" class="config-banner-text"></p>
         <button id="config-banner-dismiss" class="ghost-button icon-button compact-icon-button" type="button" title="Dismiss notice" aria-label="Dismiss notice"></button>
       </section>
-
-      <section id="status-bar" class="status-bar">Ready</section>
 
       <main id="message-scroll" class="message-scroll">
         <div id="empty-state" class="empty-state">
@@ -65,18 +85,29 @@
       </main>
 
       <form id="composer-form" class="composer">
-        <div class="composer-main">
-          <div class="composer-toolbar">
-            <button id="attach-button" class="ghost-button attach-button icon-button" type="button" title="Add attachment" aria-label="Add attachment"></button>
-            <input id="file-input" type="file" multiple hidden />
+        <div id="chat-tools-popup" class="chat-tools-popup" hidden>
+          <div class="chat-tools-popup-head">
+            <span>MCP Tools</span>
+            <small>Override for this chat</small>
           </div>
+          <div id="chat-tools-mcp-list" class="chip-list chat-tools-chip-list"></div>
+        </div>
+        <div class="composer-main">
           <div id="composer-attachments" class="composer-attachments" hidden></div>
           <div id="composer-context-meter" class="context-meter composer-context-meter" hidden></div>
+          <div class="composer-toolbar">
+            <button id="chat-tools-button" class="ghost-button attach-button icon-button" type="button" title="MCP tools" aria-label="MCP tools"></button>
+            <input id="file-input" type="file" multiple hidden />
+          </div>
           <div class="composer-field">
-            <textarea id="message-input" rows="1" placeholder="Send a message" aria-label="Message" autocorrect="off" autocapitalize="sentences" spellcheck="false"></textarea>
+            <textarea id="message-input" rows="1" placeholder="Send a message" aria-label="Message" autocorrect="on" autocapitalize="sentences" spellcheck="true"></textarea>
+            <div class="composer-inline-actions">
+              <button id="attach-button" class="ghost-button plain-icon-button attach-button icon-button" type="button" title="Add attachment" aria-label="Add attachment"></button>
+              <button id="speech-input-button" class="ghost-button plain-icon-button attach-button icon-button" type="button" title="Start dictation" aria-label="Start dictation"></button>
+            </div>
           </div>
         </div>
-        <button id="send-button" class="primary-button send-button" type="submit">Send</button>
+        <button id="send-button" class="primary-button send-button icon-button" type="submit" title="Send message" aria-label="Send message"></button>
       </form>
     </div>
   </div>
@@ -96,31 +127,98 @@
 
   <section id="settings-screen" class="settings-screen" hidden>
     <form id="settings-form" class="settings-card">
-      <p class="eyebrow">Server Settings</p>
-      <h2>LM Studio and Security</h2>
-      <label class="field">
-        <span>Base URL</span>
-        <input id="settings-base-url" type="url" placeholder="http://127.0.0.1:1234" />
-      </label>
-      <label class="field">
-        <span>API Token</span>
-        <input id="settings-api-token" type="password" placeholder="Optional API token" />
-      </label>
-      <label class="field">
-        <span>MCP Config Path</span>
-        <input id="settings-mcp-path" type="text" placeholder="Optional path to mcp.json" />
-      </label>
-      <label class="toggle-field" for="settings-require-login">
-        <input id="settings-require-login" type="checkbox" />
+      <div class="modal-head">
         <div>
-          <span>Require sign-in with a PIN</span>
-          <small id="settings-pin-hint" class="field-hint">Enable this to protect the UI with a PIN.</small>
+          <p class="eyebrow">Settings</p>
+          <h2>System Settings</h2>
         </div>
-      </label>
-      <label class="field">
-        <span>PIN</span>
-        <input id="settings-pin" type="password" inputmode="numeric" autocomplete="new-password" placeholder="Leave blank to keep the current PIN" />
-      </label>
+        <div class="modal-head-actions">
+          <button id="settings-close-button" class="ghost-button" type="button">Close</button>
+        </div>
+      </div>
+
+      <details class="settings-section" open>
+        <summary class="settings-section-title">Server Settings</summary>
+        <label class="field">
+          <span>Base URL</span>
+          <input id="settings-base-url" type="url" placeholder="http://127.0.0.1:1234" />
+        </label>
+        <label class="field">
+          <span>API Token</span>
+          <input id="settings-api-token" type="text" placeholder="Optional API token" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
+        </label>
+        <label class="field">
+          <span>MCP Config</span>
+          <div class="file-picker-row">
+            <input id="settings-mcp-path" type="text" placeholder="Optional path to mcp.json" />
+            <button id="settings-mcp-upload-button" class="ghost-button icon-button compact-icon-button" type="button" title="Upload mcp.json" aria-label="Upload mcp.json"></button>
+            <input id="settings-mcp-upload" type="file" accept=".json,application/json" hidden />
+          </div>
+          <span id="settings-mcp-upload-name" class="file-picker-label" hidden></span>
+        </label>
+        <label class="toggle-field" for="settings-require-login">
+          <input id="settings-require-login" type="checkbox" />
+          <div>
+            <span>Pin Enable</span>
+            <small id="settings-pin-hint" class="field-hint">Enable this to protect the UI with a PIN.</small>
+          </div>
+        </label>
+        <label class="field" hidden>
+          <span>PIN</span>
+          <input id="settings-pin" type="password" inputmode="numeric" autocomplete="new-password" placeholder="Leave blank to keep the current PIN" />
+        </label>
+      </details>
+
+      <details class="settings-section" open>
+        <summary class="settings-section-title">Appearance</summary>
+        <label class="field">
+          <span>Chat Text Size</span>
+          <select id="settings-chat-font-scale">
+            <option value="0.9">Compact</option>
+            <option value="1">Default</option>
+            <option value="1.1">Large</option>
+            <option value="1.2">Extra Large</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Enter Key Behavior</span>
+          <select id="settings-enter-key-behavior">
+            <option value="send">Send prompt</option>
+            <option value="newline">New line</option>
+          </select>
+        </label>
+        <div class="settings-option-row">
+          <div class="settings-option-copy">
+            <span class="settings-option-title">Theme</span>
+            <small class="field-hint">Switch between the light and dark interface themes.</small>
+          </div>
+          <button id="settings-theme-button" class="ghost-button icon-button" type="button" title="Toggle theme" aria-label="Toggle theme"></button>
+        </div>
+        <div class="settings-option-row">
+          <div class="settings-option-copy">
+            <span class="settings-option-title">Auto-Scroll</span>
+            <small class="field-hint">Automatically follow the latest streamed tokens.</small>
+          </div>
+          <button id="settings-auto-scroll-button" class="ghost-button icon-button" type="button" title="Toggle auto-scroll" aria-label="Toggle auto-scroll"></button>
+        </div>
+      </details>
+
+      <details class="settings-section" open>
+        <summary class="settings-section-title">Features</summary>
+        <label class="toggle-field toggle-field-with-action" for="settings-adaptive-memory-enabled">
+          <input id="settings-adaptive-memory-enabled" type="checkbox" />
+          <div>
+            <span>Enable adaptive memory</span>
+            <small class="field-hint">Refreshes once per day and appends a compact preference profile to the effective system prompt.</small>
+          </div>
+          <button id="settings-download-memory-button" class="ghost-button icon-button compact-icon-button" type="button" title="Download adaptive memory file" aria-label="Download adaptive memory file"></button>
+        </label>
+        <label class="field">
+          <span>Adaptive Memory Word Limit</span>
+          <input id="settings-adaptive-memory-max-words" type="number" min="50" max="2000" step="10" />
+        </label>
+      </details>
+
       <div class="settings-actions">
         <button id="settings-save-button" class="primary-button" type="submit">Save</button>
         <button id="settings-cancel-button" class="secondary-button" type="button">Cancel</button>
@@ -136,14 +234,19 @@
           <p class="eyebrow">Model Controls</p>
           <h2>Model</h2>
         </div>
-        <button id="model-close-button" class="ghost-button" type="button">Close</button>
+        <div class="modal-head-actions">
+          <button id="model-close-button" class="ghost-button" type="button">Close</button>
+        </div>
       </div>
 
       <section class="controls-panel controls-panel-modal">
         <div class="control-grid">
           <label class="field">
             <span>Model</span>
-            <select id="model-select"></select>
+            <div class="field-action-row">
+              <select id="model-select"></select>
+              <button id="model-refresh-button" class="ghost-button icon-button compact-icon-button" type="button" title="Refresh models" aria-label="Refresh models"></button>
+            </div>
           </label>
 
           <div class="button-stack">
@@ -155,34 +258,136 @@
             <span>Context</span>
             <input id="context-length-input" type="number" min="512" step="512" />
           </label>
-
-          <label class="field">
-            <span>Temperature</span>
-            <input id="temperature-input" type="number" min="0" max="1" step="0.05" placeholder="Default" />
-          </label>
-
-          <label class="field">
-            <span>Reasoning</span>
-            <select id="reasoning-select"></select>
-          </label>
         </div>
 
         <div id="model-meta" class="model-meta"></div>
 
-        <details class="advanced-panel">
-          <summary>Prompt and Tools</summary>
+        <details id="model-advanced-panel" class="advanced-panel">
+          <summary>Prompt Controls</summary>
           <label class="field wide-field">
             <span>System Prompt</span>
             <textarea id="system-prompt-input" rows="3" placeholder="Optional system prompt" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
           </label>
 
-          <div class="mcp-section">
-            <p class="subhead">MCP Servers</p>
-            <div id="mcp-list" class="chip-list"></div>
+          <div class="control-grid advanced-control-grid">
+            <label class="field">
+              <span>Reasoning</span>
+              <select id="reasoning-select"></select>
+            </label>
+
+            <label class="field">
+              <span>Temperature</span>
+              <input id="temperature-input" type="number" min="0" max="1" step="any" inputmode="decimal" placeholder="Default" />
+            </label>
+
+            <label class="field">
+              <span>Top K</span>
+              <input id="top-k-input" type="number" min="1" step="1" placeholder="Default" />
+            </label>
+
+            <label class="field">
+              <span>Top P</span>
+              <input id="top-p-input" type="number" min="0" max="1" step="any" inputmode="decimal" placeholder="Default" />
+            </label>
+
+            <label class="field">
+              <span>Min P</span>
+              <input id="min-p-input" type="number" min="0" max="1" step="any" inputmode="decimal" placeholder="Default" />
+            </label>
+
+            <label class="field">
+              <span>Repeat Penalty</span>
+              <input id="repeat-penalty-input" type="number" min="0.1" step="any" inputmode="decimal" placeholder="Default" />
+            </label>
           </div>
         </details>
       </section>
+
+      <div class="settings-actions">
+        <button id="model-reset-button" class="ghost-button" type="button">Reset</button>
+        <button id="model-save-button" class="primary-button" type="button">Save</button>
+      </div>
     </div>
+  </section>
+
+  <section id="default-tools-screen" class="settings-screen" hidden>
+    <div class="settings-card model-card">
+      <div class="modal-head">
+        <div>
+          <p class="eyebrow">MCP Tools</p>
+          <h2>Default Tools</h2>
+        </div>
+        <div class="modal-head-actions">
+          <button id="default-tools-close-button" class="ghost-button" type="button">Close</button>
+        </div>
+      </div>
+
+      <p class="field-hint">Choose which MCP tools are enabled by default for new chats.</p>
+      <div id="default-tools-mcp-list" class="chip-list"></div>
+    </div>
+  </section>
+
+  <section id="chat-override-screen" class="settings-screen" hidden>
+    <form id="chat-override-form" class="settings-card model-card">
+      <div class="modal-head">
+        <div>
+          <p class="eyebrow">Chat Override Settings</p>
+          <h2>Chat Overrides</h2>
+        </div>
+        <div class="modal-head-actions">
+          <button id="chat-override-close-button" class="ghost-button" type="button">Close</button>
+        </div>
+      </div>
+
+      <p class="field-hint">Only values changed from Model Controls are saved for this chat.</p>
+
+      <section class="controls-panel controls-panel-modal">
+        <details id="chat-override-advanced-panel" class="advanced-panel" open>
+          <summary>Prompt Controls</summary>
+          <label class="field wide-field">
+            <span>System Prompt</span>
+            <textarea id="chat-override-system-prompt-input" rows="3" placeholder="Optional system prompt override" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+          </label>
+
+          <div class="control-grid advanced-control-grid">
+            <label class="field">
+              <span>Reasoning</span>
+              <select id="chat-override-reasoning-select"></select>
+            </label>
+
+            <label class="field">
+              <span>Temperature</span>
+              <input id="chat-override-temperature-input" type="number" min="0" max="1" step="any" inputmode="decimal" placeholder="Default" />
+            </label>
+
+            <label class="field">
+              <span>Top K</span>
+              <input id="chat-override-top-k-input" type="number" min="1" step="1" placeholder="Default" />
+            </label>
+
+            <label class="field">
+              <span>Top P</span>
+              <input id="chat-override-top-p-input" type="number" min="0" max="1" step="any" inputmode="decimal" placeholder="Default" />
+            </label>
+
+            <label class="field">
+              <span>Min P</span>
+              <input id="chat-override-min-p-input" type="number" min="0" max="1" step="any" inputmode="decimal" placeholder="Default" />
+            </label>
+
+            <label class="field">
+              <span>Repeat Penalty</span>
+              <input id="chat-override-repeat-penalty-input" type="number" min="0.1" step="any" inputmode="decimal" placeholder="Default" />
+            </label>
+          </div>
+        </details>
+      </section>
+
+      <div class="settings-actions">
+        <button id="chat-override-reset-button" class="ghost-button" type="button">Reset</button>
+        <button id="chat-override-save-button" class="primary-button" type="submit">Save</button>
+      </div>
+    </form>
   </section>
 
   <section id="confirm-screen" class="settings-screen" hidden>
@@ -197,6 +402,8 @@
     </div>
   </section>
 
-  <script src="app.js?v=20260521" type="module"></script>
+  <script defer src="/vendor/katex/katex.min.js?v=20260628"></script>
+  <script defer src="/vendor/katex/contrib/auto-render.min.js?v=20260628"></script>
+  <script src="app.js?v=20260637" type="module"></script>
 </body>
 </html>

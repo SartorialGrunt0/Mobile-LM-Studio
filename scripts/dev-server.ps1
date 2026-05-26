@@ -15,11 +15,40 @@ if ($Port -lt 1 -or $Port -gt 65535) {
 }
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$projectPath = Join-Path $repoRoot "src\MobileLmStudio\MobileLmStudio.csproj"
+$serverPath = Join-Path $repoRoot "src\node\server.js"
+$nodeModulesPath = Join-Path $repoRoot "node_modules"
+$packageLockPath = Join-Path $repoRoot "package-lock.json"
 
-$sdkList = & dotnet --list-sdks 2>$null
-if (-not $sdkList) {
-    throw "No .NET SDK was found. Install the .NET 9 SDK before starting the dev server."
+$node = Get-Command node -ErrorAction SilentlyContinue
+if (-not $node) {
+    throw "Node.js was not found on PATH. Install Node.js before starting the dev server."
+}
+
+$npm = Get-Command npm -ErrorAction SilentlyContinue
+if (-not $npm) {
+    throw "npm was not found on PATH. Install Node.js before starting the dev server."
+}
+
+if (-not (Test-Path $serverPath)) {
+    throw "The Node.js server entry point was not found at $serverPath."
+}
+
+if (-not (Test-Path $nodeModulesPath)) {
+    Write-Host "Installing Node.js dependencies..."
+    Push-Location $repoRoot
+    try {
+        if (Test-Path $packageLockPath) {
+            & $npm.Source ci --omit=dev
+        } else {
+            & $npm.Source install
+        }
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm dependency installation failed with exit code $LASTEXITCODE."
+        }
+    } finally {
+        Pop-Location
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($DataPath)) {
@@ -32,24 +61,38 @@ if (-not [string]::IsNullOrWhiteSpace($dataDirectory)) {
     New-Item -ItemType Directory -Path $dataDirectory -Force | Out-Null
 }
 
+$programDataPath = Join-Path $repoRoot "artifacts\dev\programdata"
+New-Item -ItemType Directory -Path $programDataPath -Force | Out-Null
+
 $listenUrl = "http://127.0.0.1:$Port"
 $connectionString = "Data Source=$resolvedDataPath"
+$serverArguments = @(
+    $serverPath,
+    "--Web:Urls=$listenUrl",
+    "--LmStudio:BaseUrl=$LmStudioUrl",
+    "--LmStudio:ApiToken=$LmStudioApiToken",
+    "--LmStudio:McpConfigPath=$McpConfigPath",
+    "--Storage:ConnectionString=$connectionString",
+    "--Security:PinHash=",
+    "--Security:PinSalt="
+)
 
 Write-Host "Starting Mobile LM Studio from source"
-Write-Host "Project: $projectPath"
+Write-Host "Runtime: Node.js"
+Write-Host "Configuration: $Configuration (compatibility flag; ignored by the Node.js runtime)"
+Write-Host "Entry: $serverPath"
 Write-Host "URL: $listenUrl"
 Write-Host "Data file: $resolvedDataPath"
+Write-Host "ProgramData override: $programDataPath"
 Write-Host "LM Studio: $LmStudioUrl"
 
-& dotnet run `
-    --project $projectPath `
-    --configuration $Configuration `
-    --no-launch-profile `
-    -- `
-    "--urls=$listenUrl" `
-    "--Storage:ConnectionString=$connectionString" `
-    "--LmStudio:BaseUrl=$LmStudioUrl" `
-    "--LmStudio:ApiToken=$LmStudioApiToken" `
-    "--LmStudio:McpConfigPath=$McpConfigPath" `
-    "--Security:PinHash=" `
-    "--Security:PinSalt="
+Push-Location $repoRoot
+try {
+    $env:ProgramData = $programDataPath
+    & $node.Source @serverArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "The Node.js dev server exited with code $LASTEXITCODE."
+    }
+} finally {
+    Pop-Location
+}

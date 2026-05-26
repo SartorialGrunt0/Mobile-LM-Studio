@@ -4,3 +4,6 @@ tools/
 src/MobileLmStudio/bin/
 src/MobileLmStudio/obj/
 src/MobileLmStudio/.vs/
+scripts/
+reference/
+.git/
