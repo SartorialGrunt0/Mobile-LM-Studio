@@ -834,7 +834,7 @@ async function streamChat(request, response, lmStudioClient, chatRequest, option
     const lmResponse = await lmStudioClient.startChatStream({
       model: chatRequest.model,
       input: buildLmStudioInput(chatRequest),
-      system_prompt: buildEffectiveSystemPrompt(chatRequest.systemPrompt, buildAdaptiveMemoryResponse(request.appState.config)),
+      system_prompt: buildEffectiveSystemPrompt(chatRequest.systemPrompt, !options.previousResponseId ? buildAdaptiveMemoryResponse(request.appState.config) : null),
       reasoning: chatRequest.reasoning,
       stream: true,
       store: true,
@@ -1021,8 +1021,8 @@ function buildEffectiveSystemPrompt(systemPrompt, adaptiveMemory) {
   }
 
   const memoryBlock = [
-    "Adaptive user memory:",
-    "Use this as compact, soft guidance about the user's preferences and interests. Do not quote it unless directly relevant.",
+    "Adaptive user memory (background context only):",
+    "This is passive background context on the user's preferences and interests to assist in framing responses. Do not change the topic, scope, or direction of your response based on it. Do not reference, quote, or volunteer this memory unless it is directly related to the user's prompts.",
     memorySummary
   ].join("\n");
 
