@@ -55,7 +55,10 @@ const state = {
   streamControllers: new Map(),
   currentStreamController: null,
   currentStreamChatId: null,
-  chatDefaultsSaveTimer: null,
+  modelControlSnapshot: null,
+  modelControlErrors: {},
+  editingChatTitleId: null,
+  editingChatTitleDraft: "",
 };
 
 const elements = {
@@ -117,11 +120,14 @@ const elements = {
   modelScreen: document.getElementById("model-screen"),
   modelCloseButton: document.getElementById("model-close-button"),
   modelRefreshButton: document.getElementById("model-refresh-button"),
+  modelResetButton: document.getElementById("model-reset-button"),
+  modelSaveButton: document.getElementById("model-save-button"),
   defaultToolsScreen: document.getElementById("default-tools-screen"),
   defaultToolsCloseButton: document.getElementById("default-tools-close-button"),
   defaultToolsMcpList: document.getElementById("default-tools-mcp-list"),
   settingsScreen: document.getElementById("settings-screen"),
   settingsForm: document.getElementById("settings-form"),
+  settingsCloseButton: document.getElementById("settings-close-button"),
   settingsBaseUrl: document.getElementById("settings-base-url"),
   settingsApiToken: document.getElementById("settings-api-token"),
   settingsMcpPath: document.getElementById("settings-mcp-path"),
@@ -281,8 +287,20 @@ function bindEvents() {
   window.addEventListener("load", () => renderMathInMarkdown(elements.messageList));
 
   elements.chatList.addEventListener("click", event => {
+    const renameButton = event.target.closest("button[data-rename-chat-id]");
+    if (renameButton?.dataset.renameChatId) {
+      startRenameChat(renameButton.dataset.renameChatId);
+      return;
+    }
+
+    const cancelRenameButton = event.target.closest("button[data-cancel-rename-chat-id]");
+    if (cancelRenameButton?.dataset.cancelRenameChatId) {
+      cancelRenameChat(cancelRenameButton.dataset.cancelRenameChatId);
+      return;
+    }
+
     const deleteButton = event.target.closest("button[data-delete-chat-id]");
-    if (deleteButton) {
+    if (deleteButton?.dataset.deleteChatId) {
       promptDeleteChat(deleteButton.dataset.deleteChatId);
       return;
     }
@@ -293,6 +311,39 @@ function bindEvents() {
     }
 
     void openChat(button.dataset.chatId);
+  });
+
+  elements.chatList.addEventListener("input", event => {
+    const renameInput = event.target.closest("input[data-rename-chat-input]");
+    if (!renameInput?.dataset.renameChatInput) {
+      return;
+    }
+
+    if (state.editingChatTitleId === renameInput.dataset.renameChatInput) {
+      state.editingChatTitleDraft = renameInput.value;
+    }
+  });
+
+  elements.chatList.addEventListener("keydown", event => {
+    const renameInput = event.target.closest("input[data-rename-chat-input]");
+    if (!renameInput?.dataset.renameChatInput) {
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      cancelRenameChat(renameInput.dataset.renameChatInput);
+    }
+  });
+
+  elements.chatList.addEventListener("submit", event => {
+    const renameForm = event.target.closest("form[data-rename-chat-form]");
+    if (!renameForm?.dataset.renameChatForm) {
+      return;
+    }
+
+    event.preventDefault();
+    void saveRenamedChat(renameForm.dataset.renameChatForm);
   });
 
   elements.messageList.addEventListener("click", event => {
@@ -418,6 +469,11 @@ function bindEvents() {
       return;
     }
 
+    if (event.key === "Escape" && !elements.modelScreen?.hidden) {
+      closeModelMenu();
+      return;
+    }
+
     if (event.key === "Escape" && !elements.chatOverrideScreen?.hidden) {
       closeChatOverrideMenu();
       return;
@@ -435,51 +491,47 @@ function bindEvents() {
     if (shouldFollowSuggestion) {
       applySuggestedContextLength(findSelectedModel());
     }
-    elements.contextLengthInput.value = state.selectedContextLength;
     normalizeReasoningSelection();
-    renderModelDetails();
-    scheduleChatDefaultsSave();
+    renderControls();
   });
 
   elements.contextLengthInput.addEventListener("input", () => {
     syncContextLengthInput(elements.contextLengthInput.value.trim());
     renderModelDetails();
-    scheduleChatDefaultsSave();
+    updateModelControlValidation();
   });
 
   elements.temperatureInput?.addEventListener("input", () => {
     state.selectedTemperature = elements.temperatureInput.value.trim();
-    scheduleChatDefaultsSave();
+    updateModelControlValidation();
   });
 
   elements.topKInput?.addEventListener("input", () => {
     state.selectedTopK = elements.topKInput.value.trim();
-    scheduleChatDefaultsSave();
+    updateModelControlValidation();
   });
 
   elements.topPInput?.addEventListener("input", () => {
     state.selectedTopP = elements.topPInput.value.trim();
-    scheduleChatDefaultsSave();
+    updateModelControlValidation();
   });
 
   elements.minPInput?.addEventListener("input", () => {
     state.selectedMinP = elements.minPInput.value.trim();
-    scheduleChatDefaultsSave();
+    updateModelControlValidation();
   });
 
   elements.repeatPenaltyInput?.addEventListener("input", () => {
     state.selectedRepeatPenalty = elements.repeatPenaltyInput.value.trim();
-    scheduleChatDefaultsSave();
+    updateModelControlValidation();
   });
 
   elements.reasoningSelect.addEventListener("change", () => {
     state.selectedReasoning = elements.reasoningSelect.value;
-    scheduleChatDefaultsSave();
   });
 
   elements.systemPromptInput.addEventListener("input", () => {
     state.systemPrompt = elements.systemPromptInput.value;
-    scheduleChatDefaultsSave();
   });
 
   elements.sendButton.addEventListener("click", event => {
@@ -516,6 +568,8 @@ function bindEvents() {
   elements.loadModelButton.addEventListener("click", () => void loadSelectedModel());
   elements.unloadModelButton.addEventListener("click", () => void unloadSelectedModel());
   elements.modelRefreshButton?.addEventListener("click", () => void refreshModels());
+  elements.modelResetButton?.addEventListener("click", () => resetModelMenu());
+  elements.modelSaveButton?.addEventListener("click", () => void saveModelMenu());
   elements.exportChatButton.addEventListener("click", () => void exportCurrentChat());
   elements.deleteChatButton.addEventListener("click", () => promptDeleteChat(state.currentChatId));
   elements.autoScrollButton?.addEventListener("click", () => toggleAutoScroll());
@@ -527,6 +581,7 @@ function bindEvents() {
   });
 
   elements.settingsCancelButton.addEventListener("click", () => closeSettings());
+  elements.settingsCloseButton?.addEventListener("click", () => closeSettings());
   elements.settingsScreen.addEventListener("click", event => {
     if (event.target === elements.settingsScreen) {
       closeSettings();
@@ -939,6 +994,10 @@ async function refreshModels() {
 
 async function refreshChats() {
   state.chats = await fetchJson("/api/chats");
+  if (state.editingChatTitleId && !state.chats.some(chat => chat.id === state.editingChatTitleId)) {
+    state.editingChatTitleId = null;
+    state.editingChatTitleDraft = "";
+  }
   renderChatList();
 }
 
@@ -1332,9 +1391,16 @@ function renderControls() {
   }
   const locked = !state.bootstrap?.authenticated && state.bootstrap?.requireLogin;
   const isActive = isCurrentChatActivelyStreaming();
+  renderModelControlValidation();
   renderSendButton(locked, isActive);
   elements.messageInput.disabled = isActive || locked;
   elements.attachButton.disabled = isActive || locked;
+  if (elements.modelResetButton) {
+    elements.modelResetButton.disabled = locked;
+  }
+  if (elements.modelSaveButton) {
+    elements.modelSaveButton.disabled = locked;
+  }
   elements.themeButton.setAttribute("aria-pressed", state.theme === "dark" ? "true" : "false");
   renderThemeButton();
   renderAutoScrollButton();
@@ -1484,6 +1550,8 @@ function renderDefaultToolsMenu() {
 
 function renderChatList() {
   if (state.chats.length === 0) {
+    state.editingChatTitleId = null;
+    state.editingChatTitleDraft = "";
     elements.chatList.innerHTML = '<p class="chat-preview">No chats saved yet.</p>';
     return;
   }
@@ -1491,13 +1559,29 @@ function renderChatList() {
   elements.chatList.innerHTML = state.chats
     .map(chat => {
       const isStreaming = state.streamingChatIds.has(chat.id) || state.serverStreamPollChatId === chat.id;
+      const editingTitle = state.editingChatTitleId === chat.id;
       return `
       <article class="chat-item${chat.id === state.currentChatId ? " active" : ""}${isStreaming ? " streaming" : ""}">
-        <button type="button" class="chat-open" data-chat-id="${escapeAttribute(chat.id)}">
-          <span class="chat-title">${escapeHtml(chat.title)}</span>
-          <span class="chat-meta">${escapeHtml(chat.modelKey)} • ${escapeHtml(formatRelativeDate(chat.updatedAt))}</span>
-          <span class="chat-preview">${escapeHtml(chat.preview || "Saved chat")}</span>
-        </button>
+        <div class="chat-main">
+          ${editingTitle ? `
+            <form class="chat-title-edit-form" data-rename-chat-form="${escapeAttribute(chat.id)}">
+              <input class="chat-title-edit-input" data-rename-chat-input="${escapeAttribute(chat.id)}" type="text" value="${escapeAttribute(state.editingChatTitleDraft)}" maxlength="120" autocomplete="off" autocorrect="off" autocapitalize="sentences" spellcheck="false" aria-label="Rename ${escapeAttribute(chat.title)}" />
+              <div class="chat-title-edit-actions">
+                <button type="submit" class="primary-button">Save</button>
+                <button type="button" class="ghost-button" data-cancel-rename-chat-id="${escapeAttribute(chat.id)}">Cancel</button>
+              </div>
+            </form>` : `
+            <div class="chat-title-row">
+              <button type="button" class="chat-open chat-open-title" data-chat-id="${escapeAttribute(chat.id)}" aria-label="Open ${escapeAttribute(chat.title)}">
+                <span class="chat-title">${escapeHtml(chat.title)}</span>
+              </button>
+              <button type="button" class="chat-rename" data-rename-chat-id="${escapeAttribute(chat.id)}" aria-label="Rename ${escapeAttribute(chat.title)}" title="Rename ${escapeAttribute(chat.title)}">${renderIcon("pencil")}</button>
+            </div>`}
+          <button type="button" class="chat-open chat-open-body" data-chat-id="${escapeAttribute(chat.id)}" aria-label="Open ${escapeAttribute(chat.title)} details">
+            <span class="chat-meta">${escapeHtml(chat.modelKey)} • ${escapeHtml(formatRelativeDate(chat.updatedAt))}</span>
+            <span class="chat-preview">${escapeHtml(chat.preview || "Saved chat")}</span>
+          </button>
+        </div>
         <button type="button" class="chat-delete" data-delete-chat-id="${escapeAttribute(chat.id)}" aria-label="Delete ${escapeAttribute(chat.title)}" title="Delete ${escapeAttribute(chat.title)}">${renderIcon("trash")}</button>
       </article>`;
     })
@@ -2158,20 +2242,9 @@ function normalizeAdaptiveMemoryState(adaptiveMemory) {
   };
 }
 
-function scheduleChatDefaultsSave() {
-  if (state.chatDefaultsSaveTimer) {
-    clearTimeout(state.chatDefaultsSaveTimer);
-  }
-
-  state.chatDefaultsSaveTimer = setTimeout(() => {
-    state.chatDefaultsSaveTimer = null;
-    void persistChatDefaults();
-  }, 350);
-}
-
 async function persistChatDefaults() {
   if (state.bootstrap?.requireLogin && !state.bootstrap?.authenticated) {
-    return;
+    return null;
   }
 
   try {
@@ -2181,8 +2254,10 @@ async function persistChatDefaults() {
     });
     applyChatDefaultsPayload(payload);
     renderControls();
+    return payload;
   } catch (error) {
     setStatus(error.message || "Unable to save model defaults.", "error");
+    return null;
   }
 }
 
@@ -2624,18 +2699,202 @@ function resolveModelKeyFromInstanceId(instanceId) {
   return state.models.find(model => (model.loadedInstances || []).some(instance => instance.id === instanceId) || model.key === instanceId)?.key || null;
 }
 
+function captureModelControlSnapshot() {
+  return {
+    selectedModel: state.selectedModel,
+    selectedReasoning: state.selectedReasoning,
+    selectedContextLength: state.selectedContextLength,
+    selectedTemperature: state.selectedTemperature,
+    selectedTopK: state.selectedTopK,
+    selectedTopP: state.selectedTopP,
+    selectedMinP: state.selectedMinP,
+    selectedRepeatPenalty: state.selectedRepeatPenalty,
+    systemPrompt: state.systemPrompt,
+    contextLengthManual: state.contextLengthManual,
+  };
+}
+
+function restoreModelControlSnapshot(snapshot) {
+  if (!snapshot) {
+    return;
+  }
+
+  state.selectedModel = snapshot.selectedModel;
+  state.selectedReasoning = snapshot.selectedReasoning;
+  state.selectedContextLength = snapshot.selectedContextLength;
+  state.selectedTemperature = snapshot.selectedTemperature;
+  state.selectedTopK = snapshot.selectedTopK;
+  state.selectedTopP = snapshot.selectedTopP;
+  state.selectedMinP = snapshot.selectedMinP;
+  state.selectedRepeatPenalty = snapshot.selectedRepeatPenalty;
+  state.systemPrompt = snapshot.systemPrompt;
+  state.contextLengthManual = snapshot.contextLengthManual;
+}
+
+function clearModelControlValidation() {
+  state.modelControlErrors = {};
+}
+
+function validateIntegerDraft(value, label, minimum) {
+  if (!value) {
+    return null;
+  }
+
+  if (!/^\d+$/.test(value)) {
+    return `${label} must be a whole number.`;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (parsed < minimum) {
+    return `${label} must be at least ${minimum}.`;
+  }
+
+  return null;
+}
+
+function validateDecimalDraft(value, label, options = {}) {
+  if (!value) {
+    return null;
+  }
+
+  if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(value)) {
+    return `${label} must be a complete number.`;
+  }
+
+  const parsed = Number.parseFloat(value);
+  if (options.minimumExclusive === true && Number.isFinite(options.minimum) && parsed <= options.minimum) {
+    return `${label} must be greater than ${options.minimum}.`;
+  }
+  if (Number.isFinite(options.minimum) && parsed < options.minimum) {
+    return options.minimum === 0
+      ? `${label} must be 0 or greater.`
+      : `${label} must be greater than ${options.minimum}.`;
+  }
+  if (Number.isFinite(options.maximum) && parsed > options.maximum) {
+    return `${label} must be ${options.maximum} or less.`;
+  }
+
+  return null;
+}
+
+function validateModelControlState() {
+  const errors = {};
+  const contextLengthError = validateIntegerDraft(state.selectedContextLength, "Context length", 512);
+  if (contextLengthError) {
+    errors.contextLength = contextLengthError;
+  }
+
+  const temperatureError = validateDecimalDraft(state.selectedTemperature, "Temperature", { minimum: 0, maximum: 1 });
+  if (temperatureError) {
+    errors.temperature = temperatureError;
+  }
+
+  const topKError = validateIntegerDraft(state.selectedTopK, "Top K", 1);
+  if (topKError) {
+    errors.topK = topKError;
+  }
+
+  const topPError = validateDecimalDraft(state.selectedTopP, "Top P", { minimum: 0, maximum: 1 });
+  if (topPError) {
+    errors.topP = topPError;
+  }
+
+  const minPError = validateDecimalDraft(state.selectedMinP, "Min P", { minimum: 0, maximum: 1 });
+  if (minPError) {
+    errors.minP = minPError;
+  }
+
+  const repeatPenaltyError = validateDecimalDraft(state.selectedRepeatPenalty, "Repeat penalty", { minimum: 0, minimumExclusive: true });
+  if (repeatPenaltyError) {
+    errors.repeatPenalty = repeatPenaltyError;
+  }
+
+  return errors;
+}
+
+function setFieldValidation(input, error) {
+  const field = input?.closest(".field");
+  if (!field || !input) {
+    return;
+  }
+
+  if (error) {
+    field.classList.add("has-error");
+    field.dataset.error = error;
+    input.setAttribute("aria-invalid", "true");
+    input.title = error;
+    return;
+  }
+
+  field.classList.remove("has-error");
+  delete field.dataset.error;
+  input.removeAttribute("aria-invalid");
+  input.removeAttribute("title");
+}
+
+function renderModelControlValidation() {
+  setFieldValidation(elements.contextLengthInput, state.modelControlErrors.contextLength);
+  setFieldValidation(elements.temperatureInput, state.modelControlErrors.temperature);
+  setFieldValidation(elements.topKInput, state.modelControlErrors.topK);
+  setFieldValidation(elements.topPInput, state.modelControlErrors.topP);
+  setFieldValidation(elements.minPInput, state.modelControlErrors.minP);
+  setFieldValidation(elements.repeatPenaltyInput, state.modelControlErrors.repeatPenalty);
+}
+
+function updateModelControlValidation() {
+  state.modelControlErrors = validateModelControlState();
+  renderModelControlValidation();
+  return Object.keys(state.modelControlErrors).length === 0;
+}
+
 function openModelMenu(section = null) {
   closeChatOverrideMenu();
   closeDefaultToolsMenu();
+  state.modelControlSnapshot = captureModelControlSnapshot();
+  clearModelControlValidation();
   elements.settingsScreen.hidden = true;
   elements.modelScreen.hidden = false;
+  renderControls();
   if (section === "tools") {
     focusModelToolsSection();
   }
 }
 
-function closeModelMenu() {
+function closeModelMenu(options = {}) {
+  const discardChanges = options.discardChanges !== false;
+  if (discardChanges && state.modelControlSnapshot) {
+    restoreModelControlSnapshot(state.modelControlSnapshot);
+  }
+
   elements.modelScreen.hidden = true;
+  state.modelControlSnapshot = null;
+  clearModelControlValidation();
+  render();
+}
+
+function resetModelMenu() {
+  if (!state.modelControlSnapshot) {
+    return;
+  }
+
+  restoreModelControlSnapshot(state.modelControlSnapshot);
+  clearModelControlValidation();
+  renderControls();
+}
+
+async function saveModelMenu() {
+  if (!updateModelControlValidation()) {
+    setStatus("Fix the highlighted model controls before saving.", "error");
+    return;
+  }
+
+  const saved = await persistChatDefaults();
+  if (!saved) {
+    return;
+  }
+
+  setStatus("Model defaults saved.", "neutral");
+  closeModelMenu({ discardChanges: false });
 }
 
 function openDefaultToolsMenu() {
@@ -3085,6 +3344,11 @@ async function deleteChat(chatId) {
       }
     } else {
       render();
+    }
+
+    if (state.editingChatTitleId === chatId) {
+      state.editingChatTitleId = null;
+      state.editingChatTitleDraft = "";
     }
 
     setStatus("Chat deleted.", "neutral");
@@ -4032,6 +4296,9 @@ async function openSettings() {
     renderThemeButton();
     renderAutoScrollButton();
     renderMemoryDownloadButton();
+    elements.settingsForm?.querySelectorAll("details.settings-section").forEach(section => {
+      section.open = true;
+    });
     elements.settingsScreen.hidden = false;
   } catch (error) {
     setStatus("Unable to load settings.", "error");
@@ -4110,9 +4377,19 @@ async function saveSettings() {
     renderMemoryDownloadButton();
 
     await refreshBootstrap();
+    let warnings = [];
+    if (state.bootstrap?.authenticated) {
+      warnings = await loadAuthenticatedData();
+    }
     render();
 
-    setTimeout(() => closeSettings(), 1200);
+    if (warnings.length === 0) {
+      setTimeout(() => closeSettings(), 1200);
+    } else {
+      elements.settingsStatus.textContent = `Settings saved. ${warnings[0]}`;
+      elements.settingsStatus.className = "settings-status error";
+      elements.settingsStatus.hidden = false;
+    }
   } catch (error) {
     elements.settingsStatus.textContent = error.message || "Failed to save settings.";
     elements.settingsStatus.className = "settings-status error";
@@ -4394,6 +4671,77 @@ async function confirmPendingAction() {
   }
 }
 
+function startRenameChat(chatId) {
+  const chat = state.chats.find(candidate => candidate.id === chatId);
+  if (!chatId || !chat) {
+    return;
+  }
+
+  state.editingChatTitleId = chatId;
+  state.editingChatTitleDraft = chat.title || "";
+  renderChatList();
+  focusRenameChatInput(chatId);
+}
+
+function cancelRenameChat(chatId) {
+  if (!chatId || state.editingChatTitleId !== chatId) {
+    return;
+  }
+
+  state.editingChatTitleId = null;
+  state.editingChatTitleDraft = "";
+  renderChatList();
+}
+
+function focusRenameChatInput(chatId) {
+  requestAnimationFrame(() => {
+    const input = Array.from(elements.chatList.querySelectorAll("input[data-rename-chat-input]")).find(candidate => candidate.dataset.renameChatInput === chatId);
+    if (!input) {
+      return;
+    }
+
+    input.focus();
+    input.select();
+  });
+}
+
+async function saveRenamedChat(chatId) {
+  const chat = state.chats.find(candidate => candidate.id === chatId);
+  if (!chatId || !chat || state.editingChatTitleId !== chatId) {
+    return;
+  }
+
+  const trimmedTitle = state.editingChatTitleDraft.trim();
+  if (!trimmedTitle) {
+    setStatus("Chat title cannot be empty.", "error");
+    focusRenameChatInput(chatId);
+    return;
+  }
+
+  if (trimmedTitle === chat.title) {
+    cancelRenameChat(chatId);
+    return;
+  }
+
+  try {
+    const payload = await fetchJson(`/api/chats/${encodeURIComponent(chatId)}/title`, {
+      method: "POST",
+      body: JSON.stringify({ title: trimmedTitle }),
+    });
+    state.editingChatTitleId = null;
+    state.editingChatTitleDraft = "";
+    if (state.currentChat?.id === chatId) {
+      state.currentChat.title = payload?.title || trimmedTitle;
+      renderChatToolbar();
+    }
+    await refreshChats();
+    setStatus(`Renamed chat to ${payload?.title || trimmedTitle}.`, "neutral");
+  } catch (error) {
+    setStatus(error.message || "Unable to rename the chat.", "error");
+    focusRenameChatInput(chatId);
+  }
+}
+
 function promptDeleteChat(chatId) {
   if (!chatId || state.streamingChatIds.has(chatId)) {
     return;
@@ -4422,7 +4770,7 @@ function renderActionIcons() {
   setButtonIcon(elements.chatToolsButton, "tools");
   setButtonIcon(elements.speechInputButton, "mic");
   setButtonIcon(elements.attachButton, "paperclip");
-  setButtonIcon(elements.settingsMcpUploadButton, "paperclip");
+  setButtonIcon(elements.settingsMcpUploadButton, "upload");
   setButtonIcon(elements.settingsDownloadMemoryButton, "download");
   setButtonIcon(elements.configBannerDismiss, "close");
   setButtonIcon(elements.modelRefreshButton, "refresh");
@@ -4482,6 +4830,8 @@ function renderIcon(iconName) {
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16"></path><path d="M4 12h16"></path><path d="M4 18h16"></path><circle cx="9" cy="6" r="2"></circle><circle cx="15" cy="12" r="2"></circle><circle cx="11" cy="18" r="2"></circle></svg>';
     case "download":
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10"></path><path d="m8 10 4 4 4-4"></path><path d="M5 19h14"></path></svg>';
+    case "upload":
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V10"></path><path d="m8 14 4-4 4 4"></path><path d="M5 5h14"></path></svg>';
     case "copy":
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="10" height="10" rx="2"></rect><path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1"></path></svg>';
     case "send":

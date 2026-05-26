@@ -351,6 +351,28 @@ function createApp() {
     response.sendStatus(204);
   });
 
+  app.post("/api/chats/:chatId/title", (request, response) => {
+    const chat = request.appState.repository.getChatRecord(request.params.chatId);
+    if (!chat) {
+      response.sendStatus(404);
+      return;
+    }
+
+    const title = String(request.body?.title || "").trim();
+    if (!title) {
+      response.status(400).json({
+        title: "One or more validation errors occurred.",
+        errors: {
+          title: ["Chat title is required."]
+        }
+      });
+      return;
+    }
+
+    request.appState.repository.updateTitle(request.params.chatId, title);
+    response.json({ title });
+  });
+
   app.post("/api/chats/:chatId/auto-title", async (request, response) => {
     try {
       const chat = request.appState.repository.getChatRecord(request.params.chatId);

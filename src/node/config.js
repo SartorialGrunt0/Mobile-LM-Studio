@@ -160,7 +160,10 @@ function normalizeConnectionString(connectionString) {
   }
 
   const rawPath = match[1].replace(/^"|"$/g, "");
-  return `Data Source=${path.resolve(rawPath)}`;
+  const platformPath = process.platform === "win32"
+    ? rawPath.replaceAll("/", path.sep)
+    : rawPath.replaceAll("\\", path.sep);
+  return `Data Source=${path.resolve(platformPath)}`;
 }
 
 function applyEnvOverrides(config) {

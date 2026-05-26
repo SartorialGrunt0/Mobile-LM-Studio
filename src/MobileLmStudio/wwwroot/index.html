@@ -10,8 +10,9 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="LM Studio" />
   <title>Mobile LM Studio</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20260637" />
   <link rel="stylesheet" href="/vendor/katex/katex.min.css?v=20260635" />
-  <link rel="stylesheet" href="app.css?v=20260635" />
+  <link rel="stylesheet" href="app.css?v=20260637" />
 </head>
 <body>
   <div class="page-shell">
@@ -126,11 +127,18 @@
 
   <section id="settings-screen" class="settings-screen" hidden>
     <form id="settings-form" class="settings-card">
-      <p class="eyebrow">Settings</p>
-      <h2>System Settings</h2>
+      <div class="modal-head">
+        <div>
+          <p class="eyebrow">Settings</p>
+          <h2>System Settings</h2>
+        </div>
+        <div class="modal-head-actions">
+          <button id="settings-close-button" class="ghost-button" type="button">Close</button>
+        </div>
+      </div>
 
-      <section class="settings-section">
-        <h3 class="settings-section-title">Server Settings</h3>
+      <details class="settings-section" open>
+        <summary class="settings-section-title">Server Settings</summary>
         <label class="field">
           <span>Base URL</span>
           <input id="settings-base-url" type="url" placeholder="http://127.0.0.1:1234" />
@@ -159,10 +167,10 @@
           <span>PIN</span>
           <input id="settings-pin" type="password" inputmode="numeric" autocomplete="new-password" placeholder="Leave blank to keep the current PIN" />
         </label>
-      </section>
+      </details>
 
-      <section class="settings-section">
-        <h3 class="settings-section-title">Appearance</h3>
+      <details class="settings-section" open>
+        <summary class="settings-section-title">Appearance</summary>
         <label class="field">
           <span>Chat Text Size</span>
           <select id="settings-chat-font-scale">
@@ -193,10 +201,10 @@
           </div>
           <button id="settings-auto-scroll-button" class="ghost-button icon-button" type="button" title="Toggle auto-scroll" aria-label="Toggle auto-scroll"></button>
         </div>
-      </section>
+      </details>
 
-      <section class="settings-section">
-        <h3 class="settings-section-title">Features</h3>
+      <details class="settings-section" open>
+        <summary class="settings-section-title">Features</summary>
         <label class="toggle-field toggle-field-with-action" for="settings-adaptive-memory-enabled">
           <input id="settings-adaptive-memory-enabled" type="checkbox" />
           <div>
@@ -209,7 +217,7 @@
           <span>Adaptive Memory Word Limit</span>
           <input id="settings-adaptive-memory-max-words" type="number" min="50" max="2000" step="10" />
         </label>
-      </section>
+      </details>
 
       <div class="settings-actions">
         <button id="settings-save-button" class="primary-button" type="submit">Save</button>
@@ -227,7 +235,6 @@
           <h2>Model</h2>
         </div>
         <div class="modal-head-actions">
-          <button id="model-refresh-button" class="ghost-button icon-button" type="button" title="Refresh models" aria-label="Refresh models"></button>
           <button id="model-close-button" class="ghost-button" type="button">Close</button>
         </div>
       </div>
@@ -236,7 +243,10 @@
         <div class="control-grid">
           <label class="field">
             <span>Model</span>
-            <select id="model-select"></select>
+            <div class="field-action-row">
+              <select id="model-select"></select>
+              <button id="model-refresh-button" class="ghost-button icon-button compact-icon-button" type="button" title="Refresh models" aria-label="Refresh models"></button>
+            </div>
           </label>
 
           <div class="button-stack">
@@ -292,6 +302,11 @@
           </div>
         </details>
       </section>
+
+      <div class="settings-actions">
+        <button id="model-reset-button" class="ghost-button" type="button">Reset</button>
+        <button id="model-save-button" class="primary-button" type="button">Save</button>
+      </div>
     </div>
   </section>
 
@@ -389,6 +404,6 @@
 
   <script defer src="/vendor/katex/katex.min.js?v=20260628"></script>
   <script defer src="/vendor/katex/contrib/auto-render.min.js?v=20260628"></script>
-  <script src="app.js?v=20260635" type="module"></script>
+  <script src="app.js?v=20260637" type="module"></script>
 </body>
 </html>
