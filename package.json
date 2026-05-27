@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node ./src/node/server.js",
     "dev": "node ./src/node/server.js",
-    "check": "node --check ./src/node/server.js && node --check ./src/node/config.js && node --check ./src/node/logger.js && node --check ./src/node/auth.js && node --check ./src/node/settings-store.js && node --check ./src/node/mcp-catalog.js && node --check ./src/node/chat-repository.js && node --check ./src/node/chat-export.js && node --check ./src/node/lm-studio-client.js && node --check ./src/node/lm-studio-stream.js"
+    "check": "node --check ./src/node/server.js && node --check ./src/node/config.js && node --check ./src/node/logger.js && node --check ./src/node/auth.js && node --check ./src/node/settings-store.js && node --check ./src/node/mcp-catalog.js && node --check ./src/node/chat-repository.js && node --check ./src/node/chat-export.js && node --check ./src/node/lm-studio-client.js && node --check ./src/node/lm-studio-stream.js && node --check ./src/node/provider-config.js && node --check ./src/node/provider-client.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",

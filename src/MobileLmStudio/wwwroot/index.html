@@ -12,7 +12,7 @@
   <title>Mobile LM Studio</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20260637" />
   <link rel="stylesheet" href="/vendor/katex/katex.min.css?v=20260635" />
-  <link rel="stylesheet" href="app.css?v=20260637" />
+  <link rel="stylesheet" href="app.css?v=20260638" />
 </head>
 <body>
   <div class="page-shell">
@@ -140,6 +140,10 @@
       <details class="settings-section" open>
         <summary class="settings-section-title">Server Settings</summary>
         <label class="field">
+          <span>Provider</span>
+          <select id="settings-provider"></select>
+        </label>
+        <label class="field">
           <span>Base URL</span>
           <input id="settings-base-url" type="url" placeholder="http://127.0.0.1:1234" />
         </label>
@@ -147,7 +151,7 @@
           <span>API Token</span>
           <input id="settings-api-token" type="text" placeholder="Optional API token" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" />
         </label>
-        <label class="field">
+        <label id="settings-mcp-field" class="field">
           <span>MCP Config</span>
           <div class="file-picker-row">
             <input id="settings-mcp-path" type="text" placeholder="Optional path to mcp.json" />
@@ -249,7 +253,12 @@
             </div>
           </label>
 
-          <div class="button-stack">
+          <label class="field">
+            <span>Model ID</span>
+            <input id="model-key-input" type="text" placeholder="Enter a model id" autocorrect="off" autocapitalize="none" spellcheck="false" />
+          </label>
+
+          <div id="model-load-actions" class="button-stack">
             <button id="load-model-button" class="secondary-button" type="button">Load</button>
             <button id="unload-model-button" class="ghost-button" type="button">Unload</button>
           </div>
@@ -404,6 +413,6 @@
 
   <script defer src="/vendor/katex/katex.min.js?v=20260628"></script>
   <script defer src="/vendor/katex/contrib/auto-render.min.js?v=20260628"></script>
-  <script src="app.js?v=20260637" type="module"></script>
+  <script src="app.js?v=20260638" type="module"></script>
 </body>
 </html>

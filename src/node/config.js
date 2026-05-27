@@ -1,6 +1,8 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
+const { getDefaultChatDefaultsByProvider, getDefaultProviderProfiles, normalizeProviderConfiguration } = require("./provider-config");
+
 function resolveSharedDataDirectory() {
   if (process.env.DATA_DIR) {
     return process.env.DATA_DIR;
@@ -32,11 +34,16 @@ function resolveDefaultConfigPath() {
 }
 
 function getDefaultConfig() {
+  const defaultProviderProfiles = getDefaultProviderProfiles();
+  const defaultChatDefaultsByProvider = getDefaultChatDefaultsByProvider();
+
   return {
     LmStudio: {
-      BaseUrl: "http://127.0.0.1:1234",
-      ApiToken: "",
-      McpConfigPath: ""
+      ...defaultProviderProfiles.lmstudio
+    },
+    Providers: {
+      ActiveProvider: "lmstudio",
+      Profiles: defaultProviderProfiles
     },
     Security: {
       PinHash: "",
@@ -56,6 +63,7 @@ function getDefaultConfig() {
         MinP: null,
         RepeatPenalty: null
       },
+      ChatDefaultsByProvider: defaultChatDefaultsByProvider,
       AdaptiveMemory: {
         Enabled: false,
         MaxWords: 500,
@@ -204,14 +212,15 @@ function readConfig(options = {}) {
 
   const merged = deepMerge(withEnv, loadJsonFile(runtimeSettingsPath));
   const withArgs = applyArgOverrides(merged, process.argv.slice(2));
-  withArgs.Storage.ConnectionString = normalizeConnectionString(withArgs.Storage.ConnectionString);
-  if (typeof withArgs.urls === "string" && withArgs.urls.trim()) {
-    withArgs.Web = withArgs.Web || {};
-    withArgs.Web.Urls = withArgs.urls.split(";").map(value => value.trim()).filter(Boolean);
+  const normalizedConfig = normalizeProviderConfiguration(withArgs);
+  normalizedConfig.Storage.ConnectionString = normalizeConnectionString(normalizedConfig.Storage.ConnectionString);
+  if (typeof normalizedConfig.urls === "string" && normalizedConfig.urls.trim()) {
+    normalizedConfig.Web = normalizedConfig.Web || {};
+    normalizedConfig.Web.Urls = normalizedConfig.urls.split(";").map(value => value.trim()).filter(Boolean);
   }
 
   return {
-    config: withArgs,
+    config: normalizedConfig,
     baseConfigPath,
     runtimeSettingsPath,
     logDirectory: resolveLogDirectory()
