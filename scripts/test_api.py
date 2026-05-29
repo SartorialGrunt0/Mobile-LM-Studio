@@ -294,7 +294,7 @@ examples:
     args = parser.parse_args()
 
     print("  ╔══════════════════════════════════════════════════════════╗")
-    print("  ║         API Test Client - Mobile-LM-Studio               ║")
+    print("  ║          API Test Client - Mobile-AI-Chat                ║")
     print("  ╚══════════════════════════════════════════════════════════╝")
 
     if not args.url and not args.openai and not args.ollama:

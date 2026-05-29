@@ -1425,7 +1425,12 @@ function renderControls() {
   renderModelDetails();
   renderMcpServers();
   if (elements.topToolsButton) {
-    elements.topToolsButton.hidden = !activeProviderSupportsMcp();
+    const supportsMcp = activeProviderSupportsMcp();
+    elements.topToolsButton.hidden = false;
+    elements.topToolsButton.disabled = !supportsMcp;
+    const label = supportsMcp ? "Tools" : `${getActiveProviderLabel()} does not support MCP tools`;
+    elements.topToolsButton.title = label;
+    elements.topToolsButton.setAttribute("aria-label", label);
   }
   const mcpSection = elements.mcpList?.closest(".mcp-section");
   if (mcpSection) {

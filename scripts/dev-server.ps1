@@ -77,7 +77,7 @@ $serverArguments = @(
     "--Security:PinSalt="
 )
 
-Write-Host "Starting Mobile LM Studio from source"
+Write-Host "Starting Mobile AI Chat from source"
 Write-Host "Runtime: Node.js"
 Write-Host "Configuration: $Configuration (compatibility flag; ignored by the Node.js runtime)"
 Write-Host "Entry: $serverPath"

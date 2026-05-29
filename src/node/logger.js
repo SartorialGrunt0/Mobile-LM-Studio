@@ -5,7 +5,7 @@ function createLogger(logDirectory) {
   function write(level, message, error) {
     fs.mkdirSync(logDirectory, { recursive: true });
     const logFilePath = path.join(logDirectory, `${new Date().toISOString().slice(0, 10).replaceAll("-", "")}.log`);
-    const parts = [new Date().toISOString(), `[${level}]`, "mobile-lm-studio:", message];
+    const parts = [new Date().toISOString(), `[${level}]`, "mobile-ai-chat:", message];
     if (error) {
       parts.push(error.stack || error.message || String(error));
     }

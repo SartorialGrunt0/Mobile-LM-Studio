@@ -1,8 +1,8 @@
 {
-  "name": "mobile-lm-studio",
+  "name": "mobile-ai-chat",
   "version": "0.2.0",
   "private": true,
-  "description": "Node.js runtime for the Mobile LM Studio web client.",
+  "description": "Node.js runtime for the Mobile AI Chat web client.",
   "main": "src/node/server.js",
   "scripts": {
     "start": "node ./src/node/server.js",

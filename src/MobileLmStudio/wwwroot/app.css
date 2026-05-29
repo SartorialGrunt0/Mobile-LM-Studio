@@ -1,9 +1,9 @@
 :root {
   color-scheme: light;
   font-size: 15px;
-  --canvas: #f4efe4;
-  --panel: rgba(255, 250, 242, 0.84);
-  --panel-strong: #fffaf2;
+  --canvas: #ffffff;
+  --panel: rgba(255, 255, 255, 0.84);
+  --panel-strong: #ffffff;
   --border: rgba(36, 47, 61, 0.14);
   --ink: #17212b;
   --muted: #5a6470;
@@ -18,8 +18,8 @@
   --font-mono: "Cascadia Code", "Consolas", monospace;
   --bg-warm: rgba(197, 95, 56, 0.14);
   --bg-cool: rgba(23, 107, 127, 0.18);
-  --bg-start: #f7f2e8;
-  --bg-end: #efe7d8;
+  --bg-start: #ffffff;
+  --bg-end: #ffffff;
   --overlay: rgba(23, 33, 43, 0.34);
   --surface-muted: rgba(255, 255, 255, 0.72);
   --surface-soft: rgba(255, 255, 255, 0.42);

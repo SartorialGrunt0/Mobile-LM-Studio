@@ -1,6 +1,6 @@
-# Mobile LM Studio
+# Mobile AI Chat
 
-Mobile LM Studio is a lightweight Node.js web client for LM Studio that is designed to run in Docker and be usable from a phone on the same network.
+Mobile AI Chat is a lightweight Node.js web client for LM Studio that is designed to run in Docker and be usable from a phone on the same network.
 
 This repository now tracks the Node.js runtime, the static client, and Docker and local development workflows only.
 
@@ -29,7 +29,7 @@ This repository now tracks the Node.js runtime, the static client, and Docker an
 
 ## Docker
 
-Docker is the recommended way to run Mobile LM Studio.
+Docker is the recommended way to run Mobile AI Chat.
 
 ### Quick start
 
